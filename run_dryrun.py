@@ -667,7 +667,6 @@ class DryRun:
         today = now_kst().date().isoformat()
         if self.pf.done_today.get("scanner") == today:
             return
-        self.pf.done_today["scanner"] = today
         try:
             from strategy import indicators as ta
             from scout import _fetch_rankings
@@ -723,8 +722,12 @@ class DryRun:
                 notify.send("🔍 [전환 스캐너] 오늘 상승 전환 감지 (예약 없음 — 보유/중복)\n"
                             + "\n".join(lines))
             print(f"  [스캐너] 전환 {len(flips)}건, 예약 {len(queued)}건")
+            self.pf.done_today["scanner"] = today   # 성공했을 때만 완료 처리 (9/2 수리)
         except Exception as e:              # noqa: BLE001 - 스캐너 장애는 매매 무관
-            print(f"  [스캐너] 실패: {e}")
+            print(f"  [스캐너] 실패: {e} — 다음 틱에 재시도")
+            if self.pf.done_today.get("scanner_fail_alert") != today:
+                self.pf.done_today["scanner_fail_alert"] = today
+                notify.send(f"⚠️ [{self.tag}] 전환 스캐너 오류 (재시도 중): {e}")
 
     def _check_dart(self) -> None:
         """감시/보유 종목의 새 전자공시 → 즉시 알림. 보유종목이면 뉴스 재평가도 앞당긴다.
@@ -1210,7 +1213,9 @@ class DryRun:
                     # (8/28 실발생: 아침 예수금 부족 → 예약 삭제 → 낮에 입금해도 미실행)
                     retry_at[f"pend:{symbol}"] = time.time() + 600
                     self._retry_after = retry_at
-                else:
+                elif self.pf.pending.get(symbol) is pend:
+                    # 실행했던 그 예약일 때만 삭제 — virtual_sell이 실패 시 재등록한
+                    # '(재시도)' 예약을 지우던 실버그 수리 (9/2, 검수 C2)
                     del self.pf.pending[symbol]
             pos = self.pf.position_of(symbol)
 
@@ -1255,8 +1260,13 @@ class DryRun:
                         self.virtual_buy(symbol, price_now, sig.reason)
                 else:
                     prev = self.pf.pending.get(symbol)
-                    self.pf.pending[symbol] = {"action": sig.action.value,
-                                               "reason": sig.reason, "date": today}
+                    new_pend = {"action": sig.action.value,
+                                "reason": sig.reason, "date": today}
+                    # 스캐너가 먼저 건 예약의 분할 상한(frac)은 보존 — 승격 전제 조건.
+                    # (같은 틱에 on_close가 같은 전환을 감지해 덮어쓰던 실버그, 9/2 수리)
+                    if prev and prev.get("frac") and prev.get("action") == sig.action.value:
+                        new_pend["frac"] = prev["frac"]
+                    self.pf.pending[symbol] = new_pend
                     print(f"  {symbol}: 다음 시가 {sig.action.value} 예약 — {sig.reason}")
                     if not prev or prev.get("action") != sig.action.value:
                         act = "매수" if sig.action == Action.BUY else "매도"
