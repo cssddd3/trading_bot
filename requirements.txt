@@ -1,0 +1,7 @@
+requests>=2.31
+python-dotenv>=1.0
+anthropic>=1.0        # LLM 뉴스 필터용 (선택 — 없어도 봇은 동작)
+
+# 선택: 토스 API 대신/보완으로 KRX 데이터를 쓰려면
+# pip3 install pykrx
+websocket-client>=1.8   # 실시간 시세 스트림 (선택 — 없어도 REST 폴링으로 동작)

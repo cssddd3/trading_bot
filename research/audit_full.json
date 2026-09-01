@@ -1,0 +1,688 @@
+[
+ {
+  "dim": "strategy",
+  "overall": "엔지니어링 규율(이중 잠금, open-fail LLM, 화이트리스트 매도 제한)은 성실하지만, 퀀트 심사 관점에서 이 시스템은 핵심이 거꾸로다 — 자체 검증이 기각한 전략(vb, MC 손실확률 98.5%)을, 검증한 적 없는 유니버스(당일 거래대금 상위 스카우트 종목 — 정작 백테스트한 3종목은 현재 예산으로 1주도 못 산다)에, 백테스트 가정보다 체계적으로 불리한 체결(30초 폴링 + 최대 0.4% 지정가 마진 + 동시호가와 충돌하는 12초 취소)로 실행하고 있다. 여기에 장부-시그널 로그의 실측 모순(MRNA/003350/041190)까지 있어, 현 상태의 실전 운용은 전략이 아니라 마찰비용을 지불하는 무작위 매매에 가깝다. 권고: 실전 매수를 즉시 중단하고, ① 실제 파이프라인(랭킹→필터→전략)의 유니버스 일치 백테스트, ② 100건 이상 표본의 walk-forward 검증 통과를 실전 재개의 코드 강제 게이트로 만든 뒤, 소액 규모에 맞는 저회전 전략으로 방향을 전환하라.",
+  "findings": [
+   {
+    "title": "백테스트가 기각(손실확률 98.5%)한 vb 전략이 실전 기본값으로 가동 중 — 비용 이전부터 음(-)의 기대값",
+    "severity": "critical",
+    "evidence": "config.py:66 `DEFAULT_STRATEGY = \"vb\"`, run_dryrun.py:950이 이를 실전 러너 기본값으로 사용. 자체 백테스트 로그 재집계(logs/trades_*_vb.csv): 005930 101건 평균 -0.572%/건·승률 30.7%, 000660 160건 -0.820%·32.5%, 069500 252건 -0.357%·25.4%. 손익구조상 손익분기 승률은 각각 43.5%/58.1%/52.3%인데 전부 크게 미달. 결정적으로 비용 차감 전 gross PnL도 -265,300 / -506,900 / -273,150원 — 수수료 문제가 아니라 전략 자체에 엣지가 없다. 몬테카를로(backtest/montecarlo.py)도 손실확률 98.5%로 이미 기각 판정을 내렸다.",
+    "impact": "매일 실전 매수 시그널이 나올 때마다 기대값 마이너스 베팅을 반복한다. 거래당 기대손실 -0.4~-0.8%면 예산 10만원 기준 하루 1건씩 3개월(약 60거래)에 예산의 25~40%를 통계적으로 확정 소진한다. '실전 3일차 손익 0'은 표본이 없다는 뜻이지 전략이 작동한다는 뜻이 아니다.",
+    "fix": "즉시 /stop으로 vb 신규 매수를 중단하라. 그리고 '--live 기동 시 해당 전략의 OOS 기대값>0, MC 손실확률<30% 등 사전 게이트를 통과한 기록이 없으면 기동 거부'하는 검증 게이트를 run_dryrun.py 시작부에 코드로 박아, 기각된 전략이 실전에 붙는 일 자체를 구조적으로 막아라.",
+    "dim": "strategy",
+    "verdict": "CONFIRMED",
+    "verify_note": "config.py:66 DEFAULT_STRATEGY=\"vb\"·run_dryrun.py:950 기본값 사용을 확인했고, logs/trades_*_vb.csv 재집계로 모든 수치가 정확히 재현됨(005930 101건 -0.572%/승률30.7%/BE승률43.5%, 000660 160건 -0.820%/32.5%/58.1%, 069500 252건 -0.357%/25.4%/52.3%, gross PnL -265,300/-506,900/-273,150원). montecarlo.py 재실행 결과 005930 손실확률 정확히 98.5%(000660·069500은 100%)이며, watch.log에 '[실전]' 태그로 vb 시그널(HOOD 실매수 포함)이 가동 중임이 기록되어 있다."
+   },
+   {
+    "title": "백테스트 유니버스와 실전 유니버스가 완전 불일치 — 검증한 3종목은 현재 예산으로 1주도 살 수 없고, 실제 매매 대상(스카우트 종목)은 한 번도 백테스트된 적 없음",
+    "severity": "critical",
+    "evidence": "백테스트 기본 대상은 WHITELIST 3종목(run_backtest.py:139, config.py:43-50). 그러나 2026-08-25 종가: 005930=261,000원, 000660=1,715,000원, 069500=106,795원(data/*_1d.csv 마지막 행) vs 1회 주문 한도 200,000원(config.py:84)·KR 예산 100,000원(live_state.json budget_base) — 세 종목 모두 실전 매수 불가. 실제 실전 시그널은 전부 스카우트가 뽑은 소형주/급등주(live_signals.csv: 003350 13,200원, 041190 6,780원, MRVL, MRNA). '거래대금 상위 랭킹→LLM 선별→vb' 파이프라인 전체를 과거 데이터로 시뮬레이션한 코드는 어디에도 없다.",
+    "impact": "지금 실전에서 돌아가는 시스템은 그 어떤 백테스트로도 검증된 적이 없는 시스템이다. -49.5%라는 백테스트조차 실전과 무관한 종목에 대한 것이므로, 실전 기대성과는 '알 수 없음'이 아니라 '급등 소형주 고점 매수'라는 더 불리한 분포를 따를 가능성이 높다. 검증과 운용이 완전히 분리된 상태로 실돈이 나가고 있다.",
+    "fix": "pykrx의 일별 거래대금 순위로 과거 각 날짜의 후보군을 재구성해 '랭킹 상위→가격/경고 필터→vb' 파이프라인 자체를 백테스트하라(LLM 선별은 무선별/랜덤 선별로 상·하한 추정). 그 결과가 나오기 전까지는 실전을 세워두는 것이 정답이다.",
+    "dim": "strategy",
+    "verdict": "CONFIRMED",
+    "verify_note": "data/*_1d.csv 2026-08-25 종가(005930=261,000 / 000660=1,715,000 / 069500=106,795원)가 정확히 일치하고, config.py:84 한도 200,000원·live_state.json budget_base KR=100,000원으로 세 종목 모두 매수 불가가 맞다. live_signals.csv의 실전 시그널 대상(V, 003350, 041190, MRVL, MRNA, HOOD)은 전부 백테스트 로그가 없고, backtest/ 어디에도 스카우트 파이프라인 시뮬레이션 코드가 없다. 사소한 부정확: 현재 WHITELIST는 5종목(AAPL·NVDA 포함, US는 소수점 매수 가능)이나 이들 역시 백테스트 로그가 없어 '검증된 것은 못 사고, 사는 것은 검증 안 됨'이라는 핵심 명제는 그대로 성립한다."
+   },
+   {
+    "title": "장중 스카우트 추가 + vb의 조합은 구조적 고점 추격 — '돌파'가 사후적으로 이미 성립된 종목을 그 자리에서 산다",
+    "severity": "high",
+    "evidence": "후보군은 당일 거래대금 상위(config.py:141 MARKET_TRADING_AMOUNT)이고 장중 10분마다 갱신된다(config.py:137, run_dryrun.py:359-387). 급등했기 때문에 랭킹에 들어온 종목에 vb 목표가(당일시가+k×전일폭)를 계산하면 현재가는 대부분 이미 목표가 위 → run_dryrun.py:753-755에서 즉시 `max(order.price, live)` 즉 이미 늘어난 현재가로 매수. 실제로 MRVL은 미장 개장 14분 뒤(22:44), MRNA는 23:05 — 워치리스트 등재 직후 시그널 발화(live_signals.csv). 워치리스트 질 자체도 증거: 0220W0(상장 2일차·상한가 직후, 봉 1개라 워밍업 21봉 미달로 매매 불가 — watch.log '0220W0: 봉 부족 (1 < 21)'), SOXL(3배 레버리지 ETF — 일변동 ±6~10%에 -3% 고정 손절은 노이즈 안쪽).",
+    "impact": "표본선택 편향의 교과서적 형태: '이미 오른 것'만 진입 조건이 사후 충족되어, 진입가는 체계적으로 당일 급등분의 고점 근처가 된다. 당일 종가 청산은 급등 후 되돌림(mean-reversion)을 그대로 얻어맞는 구조. SOXL류에 -3% 손절이면 정상 노이즈로 손절 확정을 반복해 손실이 기계적으로 누적된다.",
+    "fix": "① scout.py build_candidates에 레버리지/인버스 ETF·상장 60일 미만 제외 필터 추가. ② vb 진입은 '당일 시가 이전에 워치리스트에 있던 종목'으로 한정(장중 신규 등재 종목은 다음 날부터 유효). ③ 손절률을 고정 3%가 아닌 ATR 배수로 종목 변동성에 맞춰라.",
+    "dim": "strategy",
+    "verdict": "CONFIRMED",
+    "verify_note": "코드 확인: 거래대금 상위 후보(config.py:141)·10분 갱신(config.py:137, run_dryrun.py:359-387)·run_dryrun.py:753-755의 max(order.price, live) 즉시 매수 모두 정확. 실증: watch.log에서 MRVL은 워치리스트 반영(8788행) 직후 매수 시도(8795행, 22:44=미장 개장 14분 뒤), HOOD는 반영과 같은 틱에 실매수, '0220W0: 봉 부족 (1 < 21)' 로그와 SOXL 워치리스트 등재 확인. SOXL 실측 일중 레인지 평균 12.7%·종가변동 평균 9.5%로 -3% 스탑이 노이즈 안쪽이라는 주장도 데이터로 뒷받침된다. 단 MRNA·AMD는 등재 직후 목표가 아래에서 대기한 사례도 있어 '대부분 이미 목표가 위'는 다소 강한 일반화이나 선택편향 메커니즘 자체는 코드·로그로 성립."
+   },
+   {
+    "title": "KR 종가청산이 구조적으로 체결 불확실 — 12초 취소 로직이 동시호가(15:20~15:30)와 양립 불가, 실패해도 재시도 없이 done 마킹",
+    "severity": "high",
+    "evidence": "종가 판단은 CLOSING_AUCTION(15:20 singlePriceAuctionStartTime, run_dryrun.py:436-439)부터 발화하고, broker.py는 지정가→시장가 모두 FILL_WAIT_SEC=12초 대기 후 미체결이면 취소한다(broker.py:20, 81-87, 163-167). 단일가 시간엔 15:30 체결 전까지 어떤 주문도 체결되지 않으므로 매 시도가 12초 만에 자가 취소된다 — 그날 청산 체결 여부가 '15:30 매칭 순간에 우연히 주문이 살아있었는가'라는 동전던지기가 된다. 게다가 AFTER 세션에서 매도 실패 여부와 무관하게 done_today를 마킹(run_dryrun.py:791-792)해 당일 재시도가 끊긴다. 취소가 거부되는 경우엔 반대로 봇이 실패 처리한 주문이 15:30에 체결돼 장부와 실계좌가 갈라진다.",
+    "impact": "당일 청산이 전제인 전략이 비의도 오버나이트를 지게 되고, 다음 날 보호장치는 진입가 -3% 스탑뿐이다. 갭하락 -7% 아침이면 -3%가 아니라 -7%+로 체결된다. 취소 거부 시나리오에선 장부 밖 체결이 생겨 이후 sellable=0으로 매도가 영구 거부되는 유령 포지션이 남는다.",
+    "fix": "종가청산 주문은 15:19 이전에 제출하고 동시호가 구간에는 취소하지 않는(15:30까지 대기) 별도 경로를 broker에 만들어라. done_today의 ':close' 마킹은 체결 확인 시에만 기록하고, 실패 시 다음 틱 재시도로 남겨라.",
+    "dim": "strategy",
+    "verdict": "CONFIRMED",
+    "verify_note": "broker.py:20 FILL_WAIT_SEC=12, _execute의 12초 폴링 후 취소(81-94), 매도 지정가→시장가 재시도도 각각 12초 취소(163-167), CLOSING_AUCTION이 singlePriceAuctionStartTime(15:20)부터 발화(run_dryrun.py:436-439), AFTER 세션에서 매도 성패 무관 done_today 마킹(791-792) 전부 코드로 확인. 동시호가 중 접수 주문은 15:30 단일가 매칭 전까지 체결되지 않으므로 12초 자가취소와 구조적으로 양립 불가라는 논리도 타당. 실증 정황: live_state.json에 003350/041190이 close 마킹된 채 stop_price=null 오버나이트 포지션으로 잔존. 단 CLOSING_AUCTION 동안은 30초 틱마다 재시도가 있어 '재시도 없이'는 AFTER 세션에 한정해야 정확하며, 취소거부→유령체결은 조건부 시나리오다."
+   },
+   {
+    "title": "장부 파일 동시 쓰기 잠금 없음 — 실전 장부와 시그널 로그가 서로 모순되는 증거가 이미 존재",
+    "severity": "high",
+    "evidence": "Portfolio.save()는 무잠금 전체 덮어쓰기(run_dryrun.py:98-108). 모순 증거: live_signals.csv에 2026-08-25 23:27:49 MRNA BUY 0.230998주 @154.15 executed=True가 있으나 live_state.json(23:35 갱신)에 MRNA 포지션 없음·실현손익 0. 003350은 시그널상 '3주 @13,210 executed=True'(20:42)인데 장부는 '1주 @14,030'. 041190은 executed=True인 BUY 시그널이 아예 없는데 장부에 1주 @6,720이 존재. watch 루프가 30초마다 메모리 상태로 저장하므로, 병행 실행된 다른 프로세스(테스트 포함)의 실체결이 다음 틱에 덮여 사라진다.",
+    "impact": "executed=True인 실주문이 장부에서 증발하면 그 주식은 스탑도 종가청산도 뉴스모니터도 없는 무관리 실포지션이 된다(봇은 장부 밖 종목을 팔지 않음 — run_dryrun.py:585-586). 반대로 장부에만 있는 유령 수량은 매도 시 sellable 부족으로 꼬인다. 소액이라 지금은 수만원이지만, 예산을 올리는 순간 같은 메커니즘으로 손실 규모도 커진다.",
+    "fix": "fcntl.flock으로 상태 파일 잠금 + 저장 직전 재로드-병합. 실전은 단일 프로세스 원칙(pid 파일로 이중 기동 차단). 기동 시 get_holdings와 장부를 대사(reconcile)해 불일치 시 텔레그램 경보 후 매매 정지.",
+    "dim": "strategy",
+    "verdict": "CONFIRMED",
+    "verify_note": "Portfolio.save()는 무잠금 전체 덮어쓰기(run_dryrun.py:98-108)이고 watch 루프가 매 틱 메모리 상태를 저장(848행)함을 확인. 모순 증거 3건 전부 실재: live_signals.csv의 MRNA BUY 0.230998주 @154.15 executed=True(23:27:49)가 live_state.json(23:46 갱신)에 포지션·실현손익 어디에도 없음, 003350은 '3주 @13,210 executed=True'(20:42, reason '변동성돌파 재현 테스트'=병행 프로세스 실행 정황) vs 장부 1주 @14,030, 041190은 executed=True BUY 없이 장부에 1주 @6,720 존재. 장부 밖 종목 매도 불가(584-586행)도 확인 — 증발한 실포지션은 무관리 상태가 된다. 041190 단독으로는 --adopt 편입(시그널 미기록)으로도 설명 가능하나 나머지 두 건의 모순은 명확하다."
+   },
+   {
+    "title": "실전 체결이 백테스트 가정보다 체계적으로 불리 — 30초 폴링 지연 + 이중 슬리피지 마진(최대 +0.4%)",
+    "severity": "medium",
+    "evidence": "백테스트는 돌파 시 max(목표가,시가)+0.1%에 체결 가정(backtest/engine.py:82-83, 150). 실전은 30초 전 lastPrice로 돌파를 감지해(run_dryrun.py:753, main 기본 interval=30) 그 시점의 live(목표가보다 높을 수 있음)에 +0.1% 슬리피지(run_dryrun.py:498)를 얹고, broker가 다시 +0.3% 지정가를 건다(broker.py:128) — 관측가 대비 최대 +0.4%, 관측가 자체도 30초 낡았다. 손절도 30초 폴링이라 급락 시 -3%보다 아래에서 체결(백테스트 실측 평균 손절 -3.33%). 종가 판단도 15:20 시점 가격/미장 마감 10분 전 가격을 쓰지만(run_dryrun.py:453-454) 백테스트는 진짜 종가로 체결한다.",
+    "impact": "돌파 매수는 상승 틱 중에 체결되는 역선택이라 지연 비용이 한 방향으로 쌓인다. gross 엣지가 이미 음수인 전략에 거래당 +0.1~0.3%p의 추가 마이너스가 얹혀, 백테스트 대비 실전 성과는 더 나쁠 수밖에 없는 구조다.",
+    "fix": "웹소켓(wss, 체결/호가 스트림)이 스펙에 있으므로 트리거 임박 종목만 실시간 구독으로 전환하거나 최소한 트리거 근접 시 폴링을 초 단위로 좁혀라. 실전 체결가와 시그널 시점 가격의 차이를 로그로 축적해 SLIPPAGE_RATE를 실측으로 재보정하라.",
+    "dim": "strategy",
+    "verdict": "CONFIRMED",
+    "verify_note": "backtest/engine.py:82-83(체결가+0.1%)·150(max(목표가,시가)), run_dryrun.py:951 interval 기본 30초, 498행 +0.1% 슬리피지, broker.py:128 지정가 +0.3% 전부 코드로 확인(+0.4%는 지정가 상한이므로 '최대'라는 표현이 정확). 손절 실측도 재현: vb 손절 75건 평균 정확히 -3.33%. 종가 판단이 15:20/미장 마감 10분 전 가격(453-454, 775행 price_now=live)을 쓰는 반면 백테스트는 bar.close 체결(167-169행)인 것도 맞다. 돌파 매수의 지연 역선택 논리는 구조적으로 타당하다."
+   },
+   {
+    "title": "소액(10만원) 구조에서 왕복 마찰 ~0.38-0.48%가 평균 승리폭과 같은 자릿수 — 당일 회전 전략의 수익구조를 원천 잠식",
+    "severity": "medium",
+    "evidence": "KR 왕복: 수수료 0.015%×2 + 거래세 0.15% + 슬리피지 0.1%×2 ≈ 0.38% (config.py:76-78; 백테스트 실측 수수료·세금만 평균 17.9bp/건). vb 평균 승리폭은 069500 +0.63%, 000660 +1.34% — 069500은 마찰이 평균 승리의 60%를 먹는다. US도 0.1%×2+슬리피지 0.2% ≈ 0.4%(config.py:62). 여기에 1주 단위 제약: 예산 10만원에서 95,000원 종목은 1주 강제(사이징 오차 ±50%), live_signals.csv의 '주문 가능 수량 0' 거부 2건(11:08, 11:28)과 매수가능 36,030원(watch.log) vs 명목예산 100,000원의 괴리가 시그널을 무작위로 죽인다.",
+    "impact": "당일 진입-당일 청산 전략은 거래당 gross 엣지가 +0.5%를 넘어야 본전인데, 이 규모·이 마찰에서 그런 엣지를 가진 일간 전략은 사실상 없다. 소액일수록 회전이 잦은 전략이 아니라 보유기간이 긴 전략이 유일하게 합리적이다.",
+    "fix": "회전율을 낮춰 마찰을 상각하라 — 보유 수일~수주의 추세 전략(st/ma 계열)으로 방향 전환하고, KR 소액에서는 왕복 0.38%가 상수임을 전략 선정 기준(최소 기대 gross 엣지)에 명시적으로 반영하라. 기동 시 명목예산과 실제 매수가능금액을 대사해 괴리 시 경고를 보내라.",
+    "dim": "strategy",
+    "verdict": "CONFIRMED",
+    "verify_note": "산식 확인: KR 왕복 0.015%×2+0.15%+0.1%×2≈0.38%(config.py:76-78), US 0.1%×2+슬리피지 0.2%≈0.4%(config.py:62). 실측 재현: 수수료·세금만 17.9~18.0bp/건, vb 평균 승리폭 069500 +0.63%·000660 +1.34%(마찰이 069500 평균 승리의 약 60%). '주문 가능 수량 0' 거부 2건(live_signals.csv 11:08 003350, 11:28 041190)과 watch.log:9358 '매수가능 36,030원 | 봇 예산 KR 100,000원' 괴리도 로그로 확인. 결론부('그런 엣지를 가진 일간 전략은 사실상 없다')는 시장 판단이나 근거 수치는 전부 사실이다."
+   },
+   {
+    "title": "st(+39~151%) 근거는 거래 2~10건 — 통계적으로 비어 있어 '교체 근거'로 쓰면 같은 실수를 반대 방향으로 반복",
+    "severity": "medium",
+    "evidence": "logs/trades_005930_st.csv = 2건(둘 다 2025-12~2026-05 반도체 강세장), 069500_st = 3건, 000660_st = 10건(최대 이익 2건이 +75.5%/+79.8%로 전부 2025-26 상승장). montecarlo.py:43-44는 10건 미만이면 MC 자체를 거부 — st는 강건성 검증이 사실상 불가능했다. 스윕은 학습구간 CAGR로 정렬(run_backtest.py:107)해 인샘플 상위를 먼저 보여주고, MC 부트스트랩은 같은 거래의 순서만 섞는 iid 가정이라 국면 의존성을 못 잡는다.",
+    "impact": "st 성적은 '한두 번의 강세장 올라타기'로, 단순보유 대비 초과수익인지조차 불명. 이 수치를 근거로 실전 전략을 st로 바꾸면 vb 때와 동일하게 검증되지 않은 전략에 실돈을 태우는 것이다. 2022년형 약세장을 만나면 -16%짜리 손절(000660_st 실측)이 연속될 수 있다.",
+    "fix": "판단 전에 표본을 만들어라: 10종목 이상 × 약세장 포함 전체 사이클로 패널 백테스트, walk-forward 분할, 매 구간 buy&hold 대비 초과수익 확인, 최소 100건 이상의 거래 표본 확보. metrics.py에 이미 있는 buy_and_hold 비교를 합격 기준에 포함시켜라.",
+    "dim": "strategy",
+    "verdict": "CONFIRMED",
+    "verify_note": "핵심 사실 전부 확인: trades_005930_st.csv 2건(2025-12-09~2026-02-06, 2026-04-09~2026-05-26), 069500 3건, 000660 10건에 최대익 +75.5%(2025-09~11)·+79.8%(2026-04~06), -16.4% 손절 실측(2024-08), montecarlo.py 44-45행 10건 미만 None 반환, run_backtest.py:107 학습 CAGR 정렬, MC가 순서만 섞는 iid 부트스트랩인 것 모두 코드·로그와 일치. 다만 헤드라인의 '+39~151%' 수치는 거래 로그 복리 재계산(+47.5%/+55.7%/+228.1%)과 정확히 재현되지 않았다 — 표본 2~10건이라는 본질적 지적은 그대로 성립한다."
+   },
+   {
+    "title": "거부된 매수도 done_today로 마킹돼 당일 재시도가 영구 차단",
+    "severity": "low",
+    "evidence": "run_dryrun.py:754-756 — virtual_buy 호출 직후 성공/거부 무관하게 `done_today[f\"{symbol}:buy\"] = today` 마킹. 실측: MRNA 23:05 '매수가능금액 부족'으로 거부(live_signals.csv)됐고 live_state.json done_today에 'MRNA:buy': '2026-08-25'가 남아, 이후 입금·재돌파가 있어도 그날은 매수 불가.",
+    "impact": "일시적 사유(환전 지연, 예산 갱신 전, API 오류)로 거부된 시그널이 하루 전체 기회 상실로 확대된다. 하루 1~2건뿐인 시그널 표본에서 유효 시그널이 조용히 증발해 실전 검증 속도까지 늦춘다.",
+    "fix": "마킹을 사유별로 분리하라: 뉴스필터·경고종목 등 '그날 불변' 사유만 done 처리하고, 자금 부족·일시 오류는 쿨다운(예: 30분) 후 재시도 가능하게 두라.",
+    "dim": "strategy",
+    "verdict": "CONFIRMED",
+    "verify_note": "run_dryrun.py:754-756에서 virtual_buy의 성공/거부와 무관하게 done_today[f\"{symbol}:buy\"]=today를 마킹하는 코드 확인(virtual_buy는 거부 시 내부 return만 하고 호출부에 결과를 반환하지 않음). 실측도 일치: live_signals.csv 23:05:25 MRNA 매수 거부 후 live_state.json done_today에 'MRNA:buy':'2026-08-25' 잔존. 사소한 부정확: 거부 사유 원문은 '매수가능금액 부족'이 아니라 '주문 가능 수량 0 — 1회 주문 한도 또는 가상 현금으로 1주를 살 수 없음'이나 의미는 동일(예산 부족성 거부)하다."
+   }
+  ]
+ },
+ {
+  "dim": "risk",
+  "overall": "개별 안전장치(화이트리스트, 이중 잠금, 예산 분리)는 성실하게 만들어졌지만, 체계로서는 세 개의 단일 실패점 위에 서 있다: (1) 잠금·대사 없는 파일 장부 — 이미 실전 시그널 로그와 장부가 불일치하는 사고가 발생해 있고, (2) 클라이언트 30초 폴링에만 의존하는 손절 — 거래소측 스탑이 없어 피드 장애·장비 장애·KR 동시호가 구조와 만나면 손실 상한이 사라지며, (3) KST 달력일 기준 일일 한도 — 미장 세션 한가운데서 리셋된다. 무엇보다 자체 백테스트가 손실확률 98.5%로 판정한 전략(vb)이 실전 기본값으로 돌고 있어, 위 장치들이 모두 완벽해도 기대 결과는 자본 잠식이다 — 한도 튜닝보다 배포 게이트와 장부 무결성부터 세워야 한다.",
+  "findings": [
+   {
+    "title": "실전 장부(live_state.json) 무결성 붕괴 — 체결 기록과 장부 불일치가 이미 발생, 계좌 대사(reconciliation) 부재",
+    "severity": "critical",
+    "evidence": "logs/live_signals.csv: 2026-08-25T23:27:49 MRNA BUY 0.230998주 @154.15 executed=True. 그러나 logs/live_state.json(23:40 저장)에 MRNA 포지션 없음(done_today['MRNA:buy']만 존재), watch.log에는 이 매수 출력이 없음(감시 프로세스가 아닌 별도 프로세스가 실행). 같은 날 003350 '재현 테스트' 3주@13210 executed=True도 장부(1주@14030)와 불일치. 원인 구조: Portfolio.save()가 파일 전체 덮어쓰기(run_dryrun.py:98-108)이고 잠금이 없으며, 실체결 후 저장은 tick 끝(run_dryrun.py:848)에서만 수행. start.sh의 watch.pid 가드(start.sh:6-8)는 수동 `python3 run_dryrun.py --live` 2차 실행을 막지 못함. DryRun.__init__(run_dryrun.py:161-185)에 시작 시 실보유↔장부 대조 로직 없음.",
+    "impact": "실체결 직후 크래시(전원/kill -9)나 동시 실행 프로세스의 last-writer-wins 저장으로 실제 산 주식이 장부에서 사라진다. virtual_sell은 장부에 없는 종목을 절대 팔지 않으므로(run_dryrun.py:584-586) 그 포지션은 스탑·종가청산·뉴스청산·/flat 전부에서 영구 제외 — 급락해도 아무도 안 판다. 반대로 장부에만 있는 유령 포지션은 exposure_krw로 예산을 계속 점유해 정상 매수를 차단한다.",
+    "fix": "① 실체결 직후(broker.buy/sell 반환 즉시) 장부를 저장하고, fcntl 파일락 또는 PID 락으로 live 모드 동시 실행을 코드 레벨에서 금지. ② 시작 시와 주기적으로 get_holdings와 장부를 대조해 불일치 시 텔레그램 경보 + 매수 정지. ③ 테스트는 반드시 별도 state/signals 경로로 격리.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "live_signals.csv 8행에 MRNA 0.230998주@154.15 executed=True(23:27:49, 사유 '돌파 테스트')가 있으나 현 장부에 MRNA 포지션 없음·매도 기록도 없음, watch.log의 23:26~23:28 틱에는 이 매수 출력이 없어 별도 프로세스 실행이 확인됨(23:28:51에 재시작 배너까지 존재). 003350 3주@13210 '재현 테스트' vs 장부 1주@14030 불일치, 심지어 041190은 executed 매수 시그널이 전혀 없는데 장부에서 손절 매도(8/26)까지 나갔고, save() 전체 덮어쓰기(98-108행)·잠금 없음·tick 끝 저장(848행)·__init__ 대조 부재·virtual_sell의 장부 밖 종목 거부(584-586행) 모두 코드로 확인."
+   },
+   {
+    "title": "KR 종가청산이 구조적으로 체결 불가 — 12초 체결대기·취소가 동시호가(15:20~15:30) 메커니즘과 충돌",
+    "severity": "critical",
+    "evidence": "vb는 당일 종가 청산(strategy/volatility_breakout.py:67-70, Fill.THIS_CLOSE)이고 종가 판단은 CLOSING_AUCTION 세션에 실행(run_dryrun.py:766-780). 실매도는 broker.sell → _execute: FILL_WAIT_SEC=12초 대기 후 취소(broker.py:20-21, 66-96, 163-167). KRX 동시호가는 15:30 단일가 매칭까지 체결이 없으므로 12초 내 체결은 불가능 → 지정가·시장가 모두 12초 후 취소 반복. 15:30 이후 AFTER에서의 마지막 시도는 장 마감으로 거부되는데, done_today['sym:close']는 매도 성공 여부와 무관하게 기록되어(run_dryrun.py:791-792) 그날 재시도가 영구히 없다. 현재 장부에 KR 포지션 2건(003350, 041190 — live_state.json)이 있어 다음 KR 청산일에 이 경로를 실제로 탄다.",
+    "impact": "'당일 청산' 전제의 vb 포지션이 매일 청산 실패 → 오버나이트 캐리. 다음날 갭하락 시 -3% 스탑은 시가 체결이라 손실 상한이 없다(예: 악재 갭 -15%면 -15%+ 실현). 백테스트가 가정한 리스크 프로파일(당일 청산)과 실전이 다른 상품이 된다.",
+    "fix": "① KR 종가청산은 15:20 이전(예: 15:10~15:15)에 시장가/지정가로 실행하거나, 동시호가 구간에서는 취소 없이 15:30 매칭까지 주문을 유지하도록 _execute에 세션 인지 로직 추가. ② done_today 마킹은 매도 성공 시에만 기록하고, 실패 시 AFTER 내 재시도 루프를 두라.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "watch.log 8/26 15:20~15:29에 5틱 연속으로 3개 KR 포지션 전부 '지정가→취소→시장가 재시도→실패' 루프가 실제 기록됐고, 003350·413630은 당일 청산에 실패해 오버나이트 캐리 중(003350은 8/25 진입 후 이틀째)이므로 핵심 메커니즘·영향 모두 실증됨. 단 '체결 불가' 절대 표현은 과장(015760은 15:29 틱에서 34,800원 종가 청산 체결 성공)이고, 8/26 실패의 최종 원인은 NXT 미지원 HTTP 422 예외라 done_today가 기록되지 않고 재시도가 계속됐다 — '그날 재시도 영구 부재' 서브클레임은 무예외 실패 경로에서만 성립(791-792행)."
+   },
+   {
+    "title": "손절 체계 전체가 클라이언트 30초 폴링 단일 의존 — 피드 장애 시 무음 비활성화, 거래소측 스탑(조건부주문) 미사용, US 시장가 슬리피지 무제한",
+    "severity": "critical",
+    "evidence": "스탑 평가는 `session in (OPEN, CLOSING_AUCTION) and has_today and live`(run_dryrun.py:749)에서만 수행. last_price()는 모든 예외를 None으로 삼키고(run_dryrun.py:487-492), 종목 처리 실패도 조용히 넘어감(run_dryrun.py:846-847). 하트비트는 루프 생존만 확인(run_dryrun.py:795-806)해 시세 API가 죽어도 '정상 가동 중'을 발송. 토스 API의 조건부주문(SINGLE/OCO/OTO)은 코드 전체에서 미사용(grep 확인 — broker.py는 LIMIT/MARKET만). US 매도는 곧바로 시장가(broker.py:159-160)로 가격 하한 없음. 실증: V 포지션이 8/24부터 이틀째 스탑 365.64 고정 보유 중이며, 미장 22:30~05:00 사이 맥북 슬립/네트워크 단절/크래시가 나면 어떤 주문도 남아있지 않다.",
+    "impact": "① 시세/캔들 API 장애 1시간 동안 보유 종목이 급락해도 스탑이 한 번도 평가되지 않고 사용자는 하트비트 때문에 정상으로 믿는다. ② 밤사이 장비 장애 시 미장 포지션은 완전 무방비(스탑 부재) — 아침에 일어나면 손실 확정. ③ 30초 폴링 갭 + 시장가 매도로 급락(VI·서킷) 시 -3% 스탑이 -10%+ 체결로 실현될 수 있고, daily_loss_limit(risk.py:79-81)은 사후 매수 차단만 할 뿐 이 손실을 줄이지 못한다.",
+    "fix": "① 매수 체결 직후 거래소측 스탑(조건부 SELL 주문)을 함께 접수하고, 클라이언트 폴링은 백업으로 강등. ② last_price/캔들 연속 N회 실패 시 텔레그램 경보 + '스탑 평가 불가' 상태를 하트비트에 명시. ③ US 매도도 1차는 지정가(-1~2% 상한) 후 시장가 폴백으로 슬리피지 상한을 두라.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "스탑 평가 게이트(749행), last_price의 예외→None(487-492행), 종목 실패 무음 스킵(846-847행), 루프 생존만 확인하는 하트비트(795-806행), broker의 LIMIT/MARKET 외 미사용(전 코드 grep으로 SINGLE/OCO/OTO 0건), US 매도 즉시 시장가(159-160행), daily_loss_limit의 매수 차단 전용(risk.py check_buy 내 79-81행) 전부 코드로 확인. V 포지션이 8/24 진입 후 현재까지 장부에 있고 로그에 '스탑 대기 365.64' 고정 표시도 실증됨."
+   },
+   {
+    "title": "KST 자정 롤오버가 미장 세션 한복판에서 일일 손실한도·주문횟수를 리셋, 손절 쿨다운도 자정에 만료",
+    "severity": "high",
+    "evidence": "DailyState.roll은 date.today() 문자열 변경 시 orders·realized_pnl을 0으로 초기화(risk.py:30-33)하고 check_buy가 매번 호출(risk.py:63-64). 미장 세션(KST 22:30~익일 05:00)은 자정을 걸친다. 쿨다운 검사도 `today <= until` 날짜 비교(risk.py:84-86)라 23시대 손절의 쿨다운이 다음 세션 도중 자정(00:00)에 풀린다. 실증: risk_state.json이 8/24 22:34 V 매수 후 day=2026-08-24/orders=1이었고, 자정 이후 같은 세션 로그는 '주문 0/10회'로 표시(watch.log 8/25 00시대).",
+    "impact": "미장에서 23시대에 연속 손절로 일일 손실한도(-50,000)에 도달해 매수가 차단돼도, 00:00에 카운터가 리셋되어 같은 하락 세션에서 신규 매수가 재개된다 — 한도가 세션당 2배로 뻥튀기. 쿨다운 만료로 방금 손절한 종목을 같은 세션에 재매수해 연속 손절이 가능하다.",
+    "fix": "RiskGuard의 '일(day)' 기준을 KST 달력일이 아니라 market_session()의 trade_date(그 시장의 거래일)로 바꾸고, 쿨다운도 거래일 단위로 계산하라. 시장별 카운터 분리(KR/US)도 함께.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "roll()의 orders·realized_pnl 초기화(risk.py:30-33)와 check_buy 매회 roll(63-64행), 쿨다운의 날짜 문자열 비교(84-86행) 코드 확인. 실증도 정확: watch.log 8/24 22:35 '주문 1/10회' → 8/25 00:00:03 '주문 0/10회'로 같은 미장 세션 중 자정 리셋이 기록돼 있어 세션당 한도 2배 효과가 성립하고, 쿨다운 만료 시점(자정)이 미장 세션 도중에 떨어지는 것도 맞음(다만 '방금' 손절 직후가 아니라 다음 세션의 자정에 풀리는 구조)."
+   },
+   {
+    "title": "예산 복리가 '시가 평가액' 기준 — 미실현 손실·환율 하락이 신규 매수 여력을 만들고, 매수 수수료 누락으로 복리가 과대 계상",
+    "severity": "high",
+    "evidence": "_budget_cash: remaining = budget_total - exposure_krw(시장)(run_dryrun.py:298-307), exposure_krw는 현재가 평가(run_dryrun.py:266-274). 보유 종목이 하락하면 exposure가 줄어 remaining이 커진다. US는 환율 하락도 동일 효과. realized_pnl 계산은 매도 수수료·세금만 차감하고 매수 수수료(US 0.1%)를 누락(run_dryrun.py:605-609, 630) → budget_total(run_dryrun.py:283-284)이 실현 왕복마다 실제 현금보다 부풀며, 최종 상한은 계좌 전체 buying_power와의 min이라 봇 예산 밖 예수금이 방파제가 아니라 침식 대상이 된다.",
+    "impact": "구체 시나리오: US 예산 10만원, A종목에 9.8만 투입 → A가 -20% 하락하면 exposure 7.8만 → remaining 2.2만 발생 → 하락장 한복판에서 B종목 추가 매수 → cost 기준 총투입 12만 > 예산 10만. 손실이 커질수록 더 사는 역방향 마틴게일 성격. 장기적으로 복리 과대 계상분만큼 사용자가 의도한 예산 상한을 초과해 계좌의 다른 현금을 쓴다.",
+    "fix": "예산 잔여는 '보유 포지션의 취득원가(cost basis, 매수 시점 환율·수수료 포함) 합계' 기준으로 계산하고, 장부에 매수 시 KRW 투입액을 기록해 매도 시 그 값으로 실현손익을 산출하라.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "_budget_cash의 remaining=budget_total-exposure_krw(298-307행), exposure_krw의 현재가 평가(266-274행), 매도 시 pnl 계산에 매도 수수료·세금만 차감하고 매수 수수료 미반영(605-609행, avg_price는 원체결가), realized_pnl→budget_total 복리(630, 283-284행), 최종 min(계좌 전체 buying_power, remaining)(307행) 전부 코드와 일치 — 하락 시 remaining이 커져 추가 매수가 가능해지고 cost 기준 총투입이 예산을 초과할 수 있는 구조가 맞음."
+   },
+   {
+    "title": "스카우트 장중 편입 종목에 대한 무제한 추격 매수 — 목표가를 이미 넘긴 종목을 현재가로 즉시 매수 (실증: HOOD +2.8% 추격)",
+    "severity": "high",
+    "evidence": "watch.log 9497-9502 (2026-08-25 23:42-43): 스카우트가 HOOD를 워치리스트에 추가한 같은 tick에서 '[실전 매수] HOOD 0.321504주 @ 109.98$ — 목표가=107' — 목표가 대비 +2.79% 추격 체결. 코드: 돌파 조건이 `live >= order.price`이고 체결가는 `max(order.price, live)`로 상한 없음(run_dryrun.py:753-755). 거래대금 상위 랭킹(이미 급등한 종목)이 장중 편입되면 목표가(당일 시가 기준 계산)를 한참 넘긴 상태에서 즉시 매수된다.",
+    "impact": "돌파 '순간'이 아니라 급등 꼬리에서 진입하므로 백테스트의 체결 가정(목표가 근처 체결)과 실전이 괴리된다. 스탑은 추격 체결가 기준 -3%(HOOD 106.68)이지만 되돌림 확률이 높은 지점에서 진입해 손절 확률이 구조적으로 상승 — vb의 이미 음(-)인 엣지를 더 악화시키는 시스템적 슬리피지.",
+    "fix": "돌파 매수에 추격 상한을 두라: live > 목표가 × (1+0.5%)면 그날 매수 포기(또는 스카우트 신규 편입 종목은 편입 시점 이후의 신규 돌파만 인정). run_dryrun.py:753의 조건에 상한 비교 한 줄이면 된다.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "watch.log 2026-08-25 23:42:48 틱에서 스카우트가 HOOD를 워치리스트에 추가한 직후 같은 틱에 '[실전 매수] HOOD 0.321504주 @ 109.98$ — 목표가=107'(+2.79% 추격, 스탑 106.68=체결가 기준) 그대로 확인. 코드도 일치: live>=order.price 조건과 max(order.price, live) 체결가에 추격 상한이 없다(753-755행)."
+   },
+   {
+    "title": "텔레그램 kill switch의 단일 소비자 경합 + /flat 부분 실행 무음 — 비상 정지가 비상시에 안 통할 수 있음",
+    "severity": "high",
+    "evidence": "poll_commands는 단일 봇 토큰의 getUpdates offset 소비 방식(notify.py:53-85). 드라이런 인스턴스나 일회 실행(`python3 run_dryrun.py` 기본 모드도 tick→_handle_commands 호출: run_dryrun.py:820, 988)이 병행되면 /stop·/flat 업데이트를 다른 프로세스가 먼저 소비해 실전 봇에 도달하지 않는다(state 파일별 tg_offset 분리: run_dryrun.py:49-53, 86). /flat은 last_price가 None인 종목을 조용히 건너뛰고(run_dryrun.py:706-709), 실매도 실패 시 '재시도 예정' 알림(run_dryrun.py:600-601)과 달리 /flat 자체 재시도 로직은 없다.",
+    "impact": "급락 중 사용자가 폰에서 /flat을 눌렀는데 (1) 명령이 딴 프로세스에 먹혀 실전 봇이 못 받거나, (2) 시세 API 불안정으로 일부 종목이 청산에서 조용히 빠지거나, (3) 매도 실패 후 재시도가 없는데 사용자는 '전량 청산 완료'로 오인 — 비상 탈출 실패로 손실 확대.",
+    "fix": "① live 모드 단일 실행 락(발견 1과 동일)으로 경합 원천 차단. ② /flat 처리 후 잔여 보유를 재확인해 '청산 실패 종목: X, Y' 를 명시 회신하고, 성공할 때까지 tick마다 재시도하는 flat_pending 상태를 두라.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "poll_commands가 단일 봇 토큰의 getUpdates offset 소비(notify.py:53-85), 프로세스별 state 파일에 tg_offset 분리 저장(run_dryrun.py:49-53, 86), 기본 모드도 tick→_handle_commands로 명령을 소비(820, 988행), /flat의 last_price None 무음 스킵(706-709행, else 없음)과 /flat 자체 재시도 부재 모두 코드로 확인 — 실제로 8/25에 감시 프로세스와 별도 프로세스가 병행 실행된 이력도 있어(발견 1) 경합 조건이 가설이 아님. 단 실매도 실패 시에는 '매도 실패' 알림이 발송되므로(600-601행) (3)의 무음 오인은 시세 None 스킵 경로에 한정됨."
+   },
+   {
+    "title": "검증 실패 전략(vb)으로 실전 가동 중 — 전략-배포 게이트 부재",
+    "severity": "high",
+    "evidence": "config.py:66 DEFAULT_STRATEGY='vb'로 실전 가동 중(watch.log 전체). 자체 백테스트에서 vb는 삼성전자 1000봉 -49.5%, 몬테카를로 3000회 손실확률 98.5%(엣지 없음 판정, logs/trades_005930_vb.csv 등). 성과가 나온 st(+39~151%)가 아닌 vb가 기본값. 코드 어디에도 '백테스트 통과 전략만 live 허용' 게이트가 없다.",
+    "impact": "리스크 통제의 최상위 결함: 개별 안전장치가 다 작동해도 기대값이 음(-)인 전략에 예산 전액(20만원)이 노출되면 결과는 완만하고 확실한 자본 잠식이다. 수수료·슬리피지·추격 매수(발견 6)까지 겹치면 백테스트 -49.5%보다 나쁠 수 있다.",
+    "fix": "실전 기동 시 해당 전략의 최근 백테스트/MC 결과를 읽어 손실확률 임계(예: >60%)면 기동 거부 또는 명시적 --force 요구. 단기적으로는 실전 전략을 st로 교체하거나 vb 가동 중단을 권고.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "config.py:66 DEFAULT_STRATEGY='vb'이고 live_signals.csv 전체가 strategy=vb로 실전 가동 확인. 저장된 백테스트 체결로 재계산 시 vb는 005930 -46%/000660 -74%/069500 -60% 복리손실이고 몬테카를로 3000회 재실행 결과 prob_loss=98.53%로 지적된 98.5%와 정확히 일치하며(st는 +47~+228%), '백테스트 통과 전략만 live 허용' 게이트는 코드 어디에도 없음."
+   },
+   {
+    "title": "뉴스 청산의 미발동·오발동 양방향 리스크 — 표본 3건 판정, 미장 마감 중 US 매도 시도, 한국어 RSS 한계",
+    "severity": "medium",
+    "evidence": "판정 입력이 구글뉴스 한국어 RSS(news.py:25-26, hl=ko&gl=KR) + 쿼리 '{이름} 주가'(llm_filter.py:209). 헤드라인 3건 미만이면 필터 무력(llm_filter.py:213-214) — 실증: HOOD 판정이 정확히 3건으로 성립(logs/news_verdicts.json 'headlines_used': 3). CRITICAL_FLAGS는 감성 무관 즉시 청산(llm_filter.py:26, 88-93)인데, '비자 주가' 쿼리에 타사(힘스앤허스) 헤드라인이 섞여 들어오는 것 실측 확인. 뉴스 모니터는 '어느 한 시장이라도 열려 있으면' 전 보유 종목을 검사(run_dryrun.py:834-835, 396-403)하므로 KR 장중에 US 보유 종목 urgent_exit 시 마감된 미장에 시장가 매도를 시도하고, 실패 시 10분마다 반복한다.",
+    "impact": "미발동: 영어권 속보(미국 실적 쇼크·소송)가 한국어 RSS에 늦게/안 잡혀 US 보유 악재 청산이 작동하지 않음 — 특히 밤사이 보유분. 오발동: 쿼리 오염 헤드라인의 치명 플래그 오귀속 시 건강한 포지션을 시장가 투매 + 쿨다운까지 걸림. 마감장 매도 시도는 (API가 예약 접수라면) 다음 개장 시가 투매로 이어질 수 있다.",
+    "fix": "① US 종목은 영어 RSS(hl=en-US)를 병행 수집. ② urgent_exit 실행 전 '그 종목 시장이 열려 있는가'를 확인하고, 마감 시엔 개장 직후 재평가 후 청산하는 예약 상태로 전환. ③ 치명 플래그 청산은 최소 헤드라인 수(예: 5건)와 종목명 명시 확인을 요구.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "hl=ko&gl=KR RSS(news.py:25-26)·'{이름} 주가' 쿼리(llm_filter.py:209)·3건 미만 무력(213-214행)·CRITICAL_FLAGS 즉시청산(26, 88-93행)·전 보유종목 검사와 10분 반복(run_dryrun.py:834-835, 396-403) 전부 코드 확인, '비자 주가' 쿼리 실측에서 힘스앤허스 헤드라인 혼입도 재현됨. 단 인용된 HOOD headlines_used:3은 캐시 갱신으로 현재 7로 바뀌어 확인 불가하나, 현 캐시의 413630이 정확히 3건 판정으로 성립해 있어 최소 표본 판정 현상 자체는 실증됨."
+   },
+   {
+    "title": "RiskGuard 금액 한도가 실예산 대비 전부 사문화 + 스카우트 가격 캡이 /budget 변경을 반영 안 함",
+    "severity": "medium",
+    "evidence": "config.py:84-89: max_order 20만 > 시장예산 10만, max_symbol 40만, max_total 100만, daily_loss 5만 — 실예산(시장별 10만, live_state.json budget_base) 구조에서 정상 -3% 손절은 건당 약 -3천원이라 daily_loss_limit은 사실상 도달 불가, 나머지 한도는 예산 캡보다 커서 한 번도 바인딩되지 않는다. 스카우트의 KR 후보 가격 캡은 config.LIVE_BUDGET(env 기본 5만)을 사용(scout.py:87-89, 102-105)하고 /budget으로 올린 budget_base(10만, run_dryrun.py:283)를 모른다 — .env에 LIVE_BUDGET_KR 없음 확인.",
+    "impact": "'한도가 있다'는 착시만 제공하고 실제 보호는 예산·buying_power 캡 하나에 의존. 스카우트는 5만~10만원대 KR 종목을 조용히 후보에서 배제해 사용자가 /budget 10만으로 올린 의도가 무력화되고, 반대로 /budget을 내리면 살 수 없는 종목이 후보에 올라 거부 시그널만 쌓인다.",
+    "fix": "RiskLimits를 실예산에 비례하게 재산정(예: max_order = 시장예산×MAX_POSITION_BUDGET_PCT, daily_loss = 예산의 5~10%). 스카우트 캡은 러너의 budget_total(market)을 인자로 전달받아 사용하라.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "config.py:84-89(1회 20만/종목 40만/총 100만/일손실 5만) vs live_state.json budget_base 시장별 10만 확인 — 정상 -3% 손절 건당 약 -3천원·일 10회 주문 한도에서 daily_loss_limit 도달은 사실상 불가하고 금액 한도들은 예산 캡보다 커 바인딩되지 않음. scout.py:87-89, 102-105가 config.LIVE_BUDGET['KR'](기본 5만)을 캡으로 쓰고 .env에 LIVE_BUDGET_KR 키가 없음(키 목록 확인)도 사실이라 /budget으로 올린 10만이 스카우트 후보 필터에 반영되지 않음."
+   },
+   {
+    "title": "주문 취소 실패 무시 → 살아있는 유령 주문이 나중에 체결되어 장부 밖 실보유 생성",
+    "severity": "medium",
+    "evidence": "broker._execute: 미체결 시 cancel_order 예외를 `except TossApiError: pass`로 무시(broker.py:81-86), 이후 최종 get_order 실패 시에도 마지막 폴링 값으로 확정(broker.py:88-94). cancel POST는 429 재시도 로직도 없음(toss/client.py:140-147). 취소가 실제 실패하면 지정가 매수(+0.3%) 주문이 호가창에 남고, 러너는 '미체결 거부'로 처리(run_dryrun.py:550-551)해 done_today만 마킹한다.",
+    "impact": "가격이 되돌아와 유령 주문이 체결되면 장부에 없는 실보유가 생긴다(발견 1과 동일 결말: 스탑·청산 영구 제외). 매도 쪽 유령 주문은 이중 매도 시도와 얽혀 주문 거부 반복을 유발한다.",
+    "fix": "취소 실패 시 1회 pass 대신 재시도(백오프) 후에도 실패하면 텔레그램 경보 + 해당 주문 ID를 pending_orders로 장부에 기록하고 다음 tick마다 상태를 추적해 체결 시 장부에 반영하라.",
+    "dim": "risk",
+    "verdict": "CONFIRMED",
+    "verify_note": "broker._execute의 cancel 예외 무시(except TossApiError: pass, 83-86행)와 최종 get_order 실패 시 마지막 폴링 값 확정(88-94행), cancel_order의 429 재시도 부재(toss/client.py:140-147 단순 POST), 러너의 미체결→'실주문 미체결/거부' 처리 및 done_today 마킹(550-551, 756행) 모두 코드 확인 — 취소 실패로 살아남은 지정가 주문이 나중에 체결되면 virtual_sell의 장부 밖 종목 거부(584-586행) 때문에 발견 1과 동일하게 관리 불능 실보유가 된다."
+   }
+  ]
+ },
+ {
+  "dim": "execution",
+  "overall": "주문 실행 경로의 가장 큰 약점은 '주문을 낸 뒤 무슨 일이 있었는지 확실히 모를 때'의 처리다 — 체결 확인 실패·취소 race·동시 프로세스 덮어쓰기가 모두 '유령/팬텀 포지션'이라는 같은 결말로 수렴하는데, 이를 잡아줄 장부-계좌 대사가 시스템 어디에도 없고 실제로 MRNA 체결 기록이 이미 장부에서 소실된 흔적이 있다. 여기에 12초 대기→취소라는 연속체결 가정이 KR 동시호가와 정면 충돌해, 지금 보유 중인 KR 포지션 2개의 내일 종가청산이 운에 맡겨진 상태다. 체결 품질 측면에서는 실측 38~69초의 감지 지연과 발주 직전 동기 LLM 호출이 +0.4% 지정가와 결합해 '오르는 돌파는 놓치고 되밀리는 돌파만 잡는' 역선택 구조인데, 엣지 없음(-49.5%, 손실확률 98.5%) 판정을 받은 vb 전략 위에서 이 실행 비용까지 얹혀 돌고 있다 — 실행 개선과 별개로 실전 전략 선택 자체를 재검토할 가치가 있다.",
+  "findings": [
+   {
+    "title": "체결 확인 실패 시 유령 포지션 — _execute가 '미체결'과 '확인 실패'를 구분하지 못하고, 장부-계좌 대사(reconciliation)가 어디에도 없음",
+    "severity": "critical",
+    "evidence": "broker.py:66-96 — get_order 폴링이 TossApiError면 continue(70-73), 12초 후 취소 시도(84, 예외 삼킴), 취소 후 재조회 1회도 실패하면 filled=0 그대로 반환(88-94). run_dryrun.py:550-553 — fill이 None이면 \"실주문 미체결/거부\"로 처리하고 장부 미기록, 직후 754-756에서 done_today 마킹. place_order(client.py:127-133)는 timeout=10의 raw POST라 서버가 주문을 접수한 뒤 응답만 유실돼도 예외. 전체 코드베이스에 get_holdings와 self.pf.positions를 대조하는 로직이 없음(adopt 제외).",
+    "impact": "US 금액기반 시장가 매수는 발주 즉시 체결되는데, 발주 후 확인 폴링이 네트워크/429/5xx로 전부 실패하면 실제 달러가 나가고 주식을 보유한 상태에서 봇 장부에는 아무것도 없다. 스탑도, 종가청산도, 뉴스모니터도 적용되지 않는 무관리 실포지션이 생기고, done_today까지 소진돼 그날 재시도조차 없다. 봇은 이 상태를 영원히 스스로 감지할 수 없다.",
+    "fix": "(1) _execute에서 filled 확인에 한 번도 성공하지 못했으면 'UNKNOWN'을 반환하고, 호출부는 UNKNOWN이면 get_holdings로 실보유를 조회해 장부에 반영(실패 시 텔레그램 긴급 알림+매수 중지). (2) 틱마다(또는 5분마다) get_holdings ↔ pf.positions 차이를 대사해 불일치 시 알림. (3) clientOrderId를 이미 넘기고 있으므로 place_order 타임아웃 시 주문 목록 조회로 접수 여부를 재확인.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "broker.py:66-96 전 경로(폴링 TossApiError→continue, 취소 예외 pass, 취소 후 재조회 1회 실패 시 filled=0 반환)와 run_dryrun.py:550-553/754-756 마킹을 코드로 확인. get_holdings는 adopt(run_dryrun.py:220)와 check_connection.py에서만 쓰이고 pf.positions와 대조하는 로직은 전무하다."
+   },
+   {
+    "title": "KR 종가청산이 동시호가(15:20~15:30) 메커니즘과 정면 충돌 — 12초 대기→취소 루프는 단일가 체결을 원리적으로 기다리지 못함",
+    "severity": "critical",
+    "evidence": "broker.py:20 FILL_WAIT_SEC=12, broker.py:81-87 — 12초 내 FILLED 아니면 주문 유형 불문 무조건 취소(시장가 재시도분 포함). run_dryrun.py:436-439 — KR 15:20 이후 CLOSING_AUCTION, run_dryrun.py:766-778 — 이 창에서 on_close→THIS_CLOSE→즉시 virtual_sell. 동시호가에서는 15:30 크로스 전까지 어떤 주문도 체결되지 않으므로 매 시도가 '지정가 12초→취소→시장가 12초→취소'로 끝난다. 현재 실전 장부에 KR 포지션 2개(003350, 041190 — logs/live_state.json) 보유 중이라 내일 15:20에 이 경로가 실제로 실행된다.",
+    "impact": "틱 간격이 실측 38~69초인데 주문이 걸려 있는 시간은 사이클당 ~24초뿐이라, 15:30 크로스 순간에 주문이 안 걸려 있으면 종가청산 실패→AFTER 1회 시도 후 오버나이트. 더 나쁜 분기: KRX는 종가 단일가 중 호가 취소·정정을 제한하므로 취소가 거부되면(TossApiError는 84-86에서 삼켜짐) 원 주문이 살아있는 채 remaining=전량으로 시장가를 또 낸다(broker.py:163-167). 크로스에서 원 주문이 체결되면 virtual_sell은 이미 예외/실패로 끝난 뒤라 장부에 포지션이 남고(실제론 매도됨), 이후 매일 sellable=0→\"수량 0\" 거부로 예산을 영구 점유하는 팬텀 포지션이 된다.",
+    "fix": "CLOSING_AUCTION 세션에서는 취소하지 않는 전용 경로를 만든다: 15:20~15:30에는 시장가(또는 하한 지정가) 1건을 내고 15:30+α까지 폴링만 하며 절대 취소하지 않는다. 대안으로 15:19까지(OPEN 세션 말미)에 종가청산을 앞당겨 연속체결 시간에 처리한다. 취소 API의 성공 응답을 확인하기 전에는 remaining 재주문을 금지한다.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "예측이 아니라 이미 오늘(08-26 15:20~15:30) 실제 발생: 5사이클 전부 '지정가 12초→취소→시장가 12초→취소' 실패(watch.log 18447-18525), 015760만 시장가 재시도가 우연히 15:30 크로스에 걸려 체결, 003350·413630은 AFTER에서도 HTTP 422(NXT 미지원) 반복 후 오버나이트 확정. 단 세부는 낡음: 041190은 08-26 09:05 손절돼 현재 KR 포지션은 003350+413630이고, 취소거부→팬텀 포지션 분기는 코드상 성립하나 실관측은 안 됨."
+   },
+   {
+    "title": "취소-체결 race: cancel 실패를 삼키고 성공으로 가정, 취소 후 재확인은 1.5초 뒤 단 1회 — KR 매도 이중 주문·장부 수량 왜곡",
+    "severity": "high",
+    "evidence": "broker.py:83-86 — cancel_order의 TossApiError를 pass로 삼킴(429도 TossApiError로 옴 — client.py:141-147 POST에 Retry-After 처리 없음). broker.py:87-94 — 취소 요청 1.5초 뒤 get_order 1회만 조회, 취소 확정(CANCELED) 여부는 검사하지 않고 그 시점 filledQuantity를 최종값으로 사용. broker.py:164-167 — 그 filled 기준으로 remaining을 계산해 시장가를 추가 발주. requests.Timeout은 TossApiError가 아니라서 cancel/place 타임아웃 시 _execute 밖으로 그대로 전파된다.",
+    "impact": "취소가 실제로 안 됐는데(429/타임아웃/체결마감 race) 됐다고 가정하면: 매도에서 원 지정가+재시도 시장가가 동시에 살아 이중 매도 시도, 매수에서 살아남은 지정가가 나중에 체결돼도 장부에 없다(유령 매수). 취소 접수~확정 사이에 체결된 수량은 1회 조회에 안 잡혀 장부 수량·평단이 실계좌와 어긋나고, 이 drift는 대사 로직이 없어 축적된다.",
+    "fix": "취소 후 CANCELED/FILLED 등 종결 상태가 확인될 때까지 폴링(예: 1.5초 간격 최대 10초)하고, 종결 확인 전에는 remaining 재주문을 내지 않는다. cancel 예외는 삼키지 말고 '주문 상태 불명'으로 승격해 상태 재조회로 해소한다. client.py의 POST 두 개에도 429 Retry-After 재시도를 넣는다.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "broker.py:83-94 코드 그대로: cancel의 TossApiError를 pass, 1.5초 뒤 단 1회 조회하며 CANCELED 확정 검사 없이 filledQuantity를 최종값으로 쓰고, 163-167에서 그 값 기준 remaining으로 시장가 추가 발주. cancel_order(client.py:141-147)는 raw POST라 429도 TossApiError로 승격되고, requests.Timeout은 어디서도 안 잡혀 전파된다."
+   },
+   {
+    "title": "AFTER 세션에서 매도 실패해도 done_today:close 마킹 — \"다음 틱에 재시도\" 알림은 거짓말이 되고 무통보 오버나이트 홀드",
+    "severity": "high",
+    "evidence": "run_dryrun.py:597-602 — 실매도 실패 시 '재시도 예정' 알림 후 return. 그 직후 run_dryrun.py:791-792 — `if session == \"AFTER\": done_today[f\"{symbol}:close\"] = today`가 매도 성공 여부와 무관하게 실행됨. US AFTER는 장 마감 후라 시장가 매도는 사실상 항상 거부된다(run_dryrun.py:456-457, 마감 후 2시간 창).",
+    "impact": "맥 슬립·긴 틱·LLM 지연으로 미장 CLOSING_AUCTION 10분 창을 놓치면 AFTER에서 딱 1회 시도→거부→그날 청산 종료로 확정된다. vb의 '당일 종가 청산' 계약이 조용히 깨져 다음 세션 시가까지 갭 리스크에 노출되고(스탑은 다음 on_open에야 복원), 사용자는 '재시도 예정' 메시지를 믿고 방치하게 된다. 과거 V 2일 방치 사고와 같은 결과가 다른 경로로 재발하는 구조.",
+    "fix": "done_today:close 마킹을 '매도 성공 또는 포지션 없음'일 때만 수행한다. AFTER에서 매도 불가면 pending에 '다음 세션 시가 청산'을 예약하고 알림 문구를 실제 동작(익일 시가 청산 예약)과 일치시킨다.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "run_dryrun.py:597-602(fill=None→'재시도 예정' 알림 후 return)와 791-792(AFTER면 성공 여부 무관 마킹)는 코드 그대로이고, US 마감 부근 매도가 실제로 거부됨도 로그로 확인(08-26 04:50 V/HOOD 소수점 주문 422 거부). 뉘앙스: 실관측 사례들은 place_order가 422 예외를 던져 마킹을 건너뛰고 AFTER 내내 재시도-전부실패했지만, 결과(무통보 오버나이트 홀드)는 동일하며 fill=None 경로에선 지적한 대로 1회 시도 후 마킹된다."
+   },
+   {
+    "title": "돌파 감지~발주까지 38~69초+α 지연 — 매 틱·매 종목 400봉 재수집과 발주 직전 동기 LLM 호출이 +0.3% 지정가와 구조적으로 불일치 (웹소켓·조건주문 미사용)",
+    "severity": "high",
+    "evidence": "실측: logs/watch.log 틱 타임스탬프 23:29:20→23:30:29(69s), 23:31:07→23:31:59(52s) 등 — interval 30초 설정인데 처리에 8~39초 추가 소요. 원인: run_dryrun.py:472-477 bars_with_today가 매 틱·매 종목 load_bars(source=\"toss\")를 호출하고, toss/data.py:122-137은 캐시가 있어도 무조건 fetch_toss로 400봉(=CHART 2페이지)을 API 재수집+CSV 재작성, 여기에 get_candles(count=2)+get_prices까지 종목당 최소 4콜. 발주 경로에는 run_dryrun.py:515-517(get_warnings+get_stocks), 538(news.check — RSS 수집+claude-opus-5 동기 호출, 수 초~십수 초)이 더 있고, 지정가는 감지 시점 가격 기준 +0.4%(SLIPPAGE 0.1%: run_dryrun.py:498 + broker.py:128의 +0.3%)로 고정. 체결/호가 웹소켓(wss://openapi-ws.tossinvest.com)과 조건주문(SINGLE/OCO)은 어디에도 사용되지 않음.",
+    "impact": "모멘텀 돌파에서 감지가 40~70초 늦으면 진입가는 목표가보다 체계적으로 나쁘고(백테스트는 목표가 체결 가정 — 실전과의 갭), 계속 오르는 진짜 돌파는 +0.4% 지정가에 안 걸려 놓치고, 되밀리는 가짜 돌파만 체결되는 역선택이 발생한다. 손절 스탑도 같은 지연을 받아 급락 시 -3%보다 훨씬 아래에서 체결된다. 워치리스트가 커질수록(스카우트가 매일 시장별 3종목씩 누적) 틱이 선형으로 길어져 악화된다.",
+    "fix": "(1) 즉효: 일봉 400봉 재수집을 하루 1회로 줄이고 틱에는 get_prices(최대 200심볼 1콜) + get_candles(count=2)만 사용 — 틱을 2~3초로 단축. (2) 장중 가격은 get_prices 벌크 1콜로 전 종목 동시 조회. (3) 뉴스필터 판정은 발주 경로 밖에서 선계산(스카우트 시점·장전)하고 발주 시엔 캐시만 참조. (4) 근본: 체결가 웹소켓 구독 또는 서버측 조건주문(SINGLE)으로 목표가 도달 시 즉시 발주.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "실측 틱 간격(23:29:20→23:30:29=69s, 23:30:29→23:31:07=38s, 23:31:07→23:31:59=52s) watch.log에서 그대로 확인. bars_with_today(run_dryrun.py:472-477)가 매 틱 load_bars(source=\"toss\")를 부르고 data.py:135-137은 캐시 유무 무관 fetch_toss 400봉(2페이지)+CSV 재작성, 발주 경로에 get_warnings/get_stocks(515-517)+동기 news.check(538), 지정가는 +0.1%(SLIPPAGE_RATE=0.001)+0.3%(broker.py:128), 웹소켓/조건주문 사용처는 grep 결과 0건."
+   },
+   {
+    "title": "동시 프로세스가 같은 실전 장부를 잠금 없이 덮어씀 — 실제로 MRNA 체결 기록이 장부에서 소실됨",
+    "severity": "high",
+    "evidence": "logs/live_signals.csv 2026-08-25T23:27:49 MRNA BUY 0.230998주 @154.15 executed=True — 그러나 logs/live_state.json(23:38 갱신)의 positions에 MRNA 없음. watch.log에 23:28:51, 23:32:37 재시작 배너가 연속으로 찍혀 워처와 수동 실행이 겹쳤음을 확인. Portfolio는 시작 시 load(run_dryrun.py:76-96) 후 메모리 보유, 매 틱 전체 덮어쓰기 save(98-108, 848) — 파일 잠금·버전 검사 없음. start.sh:6-9의 PID 체크는 start.sh 경로만 막고 python3 run_dryrun.py 직접 실행(--once/--adopt/테스트)은 못 막음. risk_state.json도 동일 구조.",
+    "impact": "워처가 도는 동안 다른 프로세스(수동 테스트, --once, --adopt)가 실주문을 내면 그 체결은 워처의 다음 save에서 소리 없이 지워진다 — 유령 포지션의 두 번째 생성 경로이며 이미 한 번 발생했다(위 MRNA가 실주문이었다면 지금 ~$35가 무관리 상태). 일일 주문 카운터·쿨다운도 서로 덮어써 한도 우회가 가능하다.",
+    "fix": "live 장부에 파일 잠금(fcntl.flock)과 프로세스 단일화(파이썬 레벨 pidfile 검사, --live는 워처 실행 중 거부)를 넣는다. 최소한 save 전에 파일 mtime/버전을 비교해 외부 변경 감지 시 재로드-병합한다. 그리고 finding 1의 holdings 대사가 이 경로의 최종 안전망이 된다.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "live_signals.csv 23:27:49 MRNA BUY executed=True 존재, live_state.json positions에 MRNA 없고 SELL 기록도 없음. watch.log에 23:28:51 틱 직후·23:32:37 틱 직후 재시작 배너 2회(9365/9408행)가 지적한 시각 그대로 찍혀 있고, Portfolio.save(run_dryrun.py:98-108)는 잠금·버전검사 없는 전체 덮어쓰기, start.sh PID 체크는 직접 실행을 못 막는다 — 전부 확인됨."
+   },
+   {
+    "title": "텔레그램 /flat·/status 처리 중 주문·계좌 API 예외가 봇 전체를 죽임 — 킬 스위치가 봇 킬 스위치가 되는 경로",
+    "severity": "high",
+    "evidence": "run_dryrun.py:820 — tick() 안에서 self._handle_commands()가 try 없이 호출됨(_idle_wait 쪽 889-891만 보호됨). /flat은 virtual_sell→broker.sell→place_order로 이어지는데 place_order(client.py:127-133)는 장 마감·429·타임아웃 시 예외를 던지고, 이 예외는 virtual_sell(597-598)·_handle_commands 어디에서도 잡히지 않아 watch()의 917-920에서 크래시 알림 후 re-raise로 프로세스가 종료된다. /status의 broker.buying_power()(717)도 동일 경로.",
+    "impact": "포지션 보유 중 비상 상황에서 사용자가 /flat을 쳤는데 시장이 닫혀 있으면(또는 일시적 API 오류) 청산은 실패하고 봇 자체가 죽는다. 이후 스탑·종가청산·뉴스모니터 전부 정지 — 비상 탈출 버튼이 최악의 타이밍에 무인 운용을 끝장내는 설계.",
+    "fix": "tick() 안의 _handle_commands() 호출을 try/except로 감싸고, /flat 루프는 종목별 예외를 개별 처리해 나머지 종목 청산을 계속한다. 장 마감 중 /flat은 '개장 시 자동 청산 예약'으로 전환하고 그 사실을 회신한다.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "tick() 안의 self._handle_commands()(run_dryrun.py:820)는 try 없이 호출되고(_idle_wait 쪽 889-891만 보호), /flat→virtual_sell(598)→broker.sell→place_order는 예외를 그대로 던지며(오늘 로그의 422들이 매도 주문이 실제로 예외를 던짐을 실증) watch():917-920에서 크래시 알림 후 re-raise로 종료된다. /status의 buying_power(717)도 같은 무방비 경로."
+   },
+   {
+    "title": "매수 1회 실패(일시적 사유 포함)가 done_today로 그날 기회를 영구 소멸 — 실증: MRNA/MRVL",
+    "severity": "medium",
+    "evidence": "run_dryrun.py:754-756 — virtual_buy 호출 직후 체결·거부 여부와 무관하게 done_today[symbol:buy]=today 마킹. 실증: logs/live_signals.csv 23:05:25 MRNA 거부(매수가능금액 부족, executed=False)인데 logs/live_state.json done_today에 \"MRNA:buy\": \"2026-08-25\", \"MRVL:buy\": \"2026-08-25\" 존재 — 이후 로그에서 MRNA가 목표가 153.01 근처(152.97, 153.00)를 계속 맴돌아도 재시도 없음.",
+    "impact": "USD 예수금 일시 부족, 429, 지정가 12초 미체결, LLM 호출 중 가격 이탈 같은 일시적 사유 하나로 그 종목의 그날 진입이 전부 사라진다. 돌파 전략은 하루 한 번의 진입이 전부라, 복구 가능한 실패가 곧 그날 엣지 전체의 소멸이 된다.",
+    "fix": "done_today 마킹을 '체결 성공 또는 영구적 거부(화이트리스트/경고종목/뉴스필터/한도초과)'로 한정하고, 일시적 사유(미체결·잔고부족·API 오류)는 마킹하지 않거나 짧은 쿨다운(예: 5분) 후 재시도를 허용한다. 거부 사유를 permanent/transient로 분류해 반환하도록 RiskGuard·broker를 확장.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "run_dryrun.py:754-756이 virtual_buy 결과와 무관하게 마킹하는 것 코드 확인, live_signals.csv의 MRVL(22:44:05)·MRNA(23:05:25) executed=False 거부에도 live_state.json done_today에 두 종목 :buy가 2026-08-25로 박혀 있음 확인. 단 '153.01 근처 맴돌아도 재시도 없음' 증거는 약함 — 로그의 152.4~153.00은 목표가 미달이라 done_today 없이도 매수가 안 나가는 구간(메커니즘 자체는 확정)."
+   },
+   {
+    "title": "ACCOUNT 그룹(1/s) buying_power 연속 2회 호출 + 주문/취소 POST에 429 재시도 없음",
+    "severity": "medium",
+    "evidence": "매수 경로에서 run_dryrun.py:304/306(_budget_cash→broker.buying_power) 직후 broker.py:122/135(buy 내부에서 buying_power 재호출) — 1초 내 ACCOUNT 콜 2회로 두 번째는 429가 예상됨(GET은 client.py:42-45에서 Retry-After 재시도로 살아나지만 발주 지연 가중). 반면 place_order(client.py:127-133)·cancel_order(141-147)는 raw POST로 429 처리가 전혀 없어 TossApiError로 승격된다. 참고로 MARKET_DATA/CHART는 호출이 순차라 15/s·20/s 위반은 어려우나, 종목당 4콜×N종목이 전부 발주 지연으로 전가된다(finding 5).",
+    "impact": "가장 시간이 중요한 발주 직전에 자체 유발 429로 1초 이상을 추가로 태운다. cancel의 429는 broker.py:84-86에서 삼켜져 '취소 성공 가정' race(finding 3)를 실제로 트리거하는 가장 그럴듯한 방아쇠고, place의 429는 매수 시도 유실이 된다.",
+    "fix": "broker.buy가 _budget_cash에서 조회한 buying_power를 파라미터로 전달받아 재조회를 없앤다. client.py의 _get 429 로직을 POST에도 동일 적용(ORDER 그룹 10/s 기준 Retry-After 준수)한다.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "매수 경로의 buying_power 2회 호출(run_dryrun.py:304/306 → broker.py:122/135)과 place_order/cancel_order가 429 처리 없는 raw POST(client.py:127-133, 141-147)라 TossApiError로 승격되는 것 코드로 확인. 다만 두 ACCOUNT 콜 사이에 warnings/stocks/뉴스체크가 끼어 '1초 내 2회'는 뉴스필터 캐시 히트 시에만 성립하는 확률적 주장(GET은 42-45의 Retry-After 재시도로 살아남)."
+   },
+   {
+    "title": "broker.fx()에 폴백·0 검증 없음 — 환율 0이면 US 매수 한도검사가 0원으로 통과",
+    "severity": "low",
+    "evidence": "broker.py:47-52 — get_exchange_rate 결과를 검증 없이 캐시(예외 시 그대로 전파, rate 필드 누락 시 client.py:183이 0.0 반환). broker.py:115-118 — krw_amount = amount_usd * fx()로 check_buy에 전달. 러너의 fx()(run_dryrun.py:252-261)에는 1400 폴백이 있지만 broker에는 없음 — 같은 환율을 두 군데서 따로 구현한 불일치.",
+    "impact": "환율 API가 비정상 응답(rate=0)을 주면 5분간 모든 US 매수가 'KRW 0원 주문'으로 한도검사를 통과해 예산·1회 한도·종목 한도가 전부 무력화된 실주문이 나간다.",
+    "fix": "broker.fx()에서 rate<=0이면 예외를 던지거나 러너와 동일한 보수적 폴백(마지막 정상값, 없으면 매수 거부)을 적용한다. 환율 조회를 러너의 fx() 하나로 통일해 broker가 주입받게 한다.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "근거는 전부 코드 일치: broker.py:47-52 무검증 캐시, client.py:183 rate 누락 시 0.0, broker.py:115-118 krw_amount=amount_usd*fx로 check_buy 통과, 러너만 1400 폴백(252-261) — 이중 구현 불일치 사실. 단 영향은 과장: 주문 금액은 러너 층이 자기 fx로 이미 사이징·검사한 값이라(virtual_buy:499-525) 실제로 나가는 주문이 무한도가 되진 않고, 러너 fx까지 0이면 504행에서 ZeroDivisionError로 주문 자체가 안 나간다 — 무력화되는 건 이중 방어의 두 번째 겹뿐."
+   },
+   {
+    "title": "RiskGuard 일일 한도가 KST 자정 기준 리셋 — 자정을 걸치는 US 세션 중간에 손실한도·주문횟수 초기화",
+    "severity": "low",
+    "evidence": "risk.py:63-64(check_buy가 date.today()로 roll), risk.py:30-33(roll이 orders·realized_pnl을 0으로), risk.py:109·114(record_order/record_close도 date.today()). US 정규장은 KST 22:30~익일 05:00으로 자정을 관통한다(CLAUDE.md·run_dryrun.py:444-457).",
+    "impact": "자정 전 US 매매로 일일 손실 한도(-50,000원)에 도달해 매수가 차단돼도 00:00에 카운터가 리셋돼 같은 세션에서 매수가 재개된다 — 손실 한도가 한 세션에 두 번 열리는 셈. 주문 횟수 한도(10회)도 동일.",
+    "fix": "일일 한도의 기준일을 각 시장의 trade_date(market_session이 이미 제공)로 잡거나, 최소한 롤오버 시각을 US 장 마감(05:00 KST) 이후로 옮긴다.",
+    "dim": "execution",
+    "verdict": "CONFIRMED",
+    "verify_note": "risk.py:30-33/63-64/109/114의 date.today() 기준 roll 코드 확인, 그리고 실증까지 있음: 08-25 23:43 HOOD 매수로 '주문 1/10회'(watch.log 9504)였던 카운터가 같은 US 세션 중인 08-26 04:40 틱에서 '주문 0/10회'로 리셋돼 있다."
+   }
+  ]
+ },
+ {
+  "dim": "correctness",
+  "overall": "안전장치의 '검사 규칙'(RiskGuard, 이중 잠금, 화이트리스트)은 성실하게 짜여 있으나, 그 규칙들이 딛고 선 '상태'가 전부 모래 위다 — 장부는 실계좌와 대조된 적이 없고(이미 3개 파일이 서로 불일치), 저장은 비원자적이며 손상 시 킬 스위치까지 조용히 풀리고, 프로세스 이중 실행을 막는 락이 없어 실주문 이중 발사와 장부 덮어쓰기가 로그에 흔적을 남긴 상태다. 과거 사고 4건과 동일한 두 패턴(자정/거래일 경계 혼동, 상태 비영속·고아화)이 RiskGuard 자정 리셋과 pending 고아화라는 형태로 아직 실탄을 장전한 채 남아 있다. 엣지 없음 판정(vb 손실확률 98.5%)이 난 전략으로 실전을 돌리는 것과 별개로, 대조 루프·원자적 저장·단일 인스턴스 락 세 가지는 다음 체결이 나기 전에 넣어야 한다.",
+  "findings": [
+   {
+    "title": "장부-실계좌 대조(reconciliation) 전무 — 이미 장부 드리프트가 발생해 있는데 아무도 모른다",
+    "severity": "critical",
+    "evidence": "get_holdings 호출처는 adopt(run_dryrun.py:220)와 check_connection.py:55 뿐 — 주기적 대조 코드 없음. 실증: logs/live_signals.csv 8행 'MRNA BUY 0.230998주 @154.15 executed=True'(23:27:49)가 logs/live_state.json positions에 없음. 5행 '003350 BUY 3주 @13210 executed=True'인데 장부는 '003350 1주 @14030'. logs/risk_state.json은 day=2026-08-24 orders=1로 또 다른 이야기. 체결 유실 경로: broker.py:70-77(폴링 중 TossApiError를 continue로 삼킴), broker.py:81-95(취소 후 재조회도 실패하면 filled=0 반환) → run_dryrun.py:550-551에서 '실주문 미체결/거부'로 처리되어 실제 체결된 주식이 장부에서 누락. order_id도 어디에도 영속 저장되지 않아 사후 대조조차 불가",
+    "impact": "실체결된 주식(현재 MRNA 0.23주 추정)이 장부 밖에 있으면 virtual_sell(run_dryrun.py:584-586)이 '봇 장부에 없는 종목은 팔지 않는다'로 스탑/청산/뉴스모니터 전부에서 제외 — 손절 없는 방치 포지션. 반대로 장부에만 있고 실계좌에 없는 수량(수동 매도 시)은 매도 주문이 매 틱 실패-재시도 루프에 빠진다. 지금 이 순간에도 3개 파일이 불일치인데 감지 수단이 0",
+    "fix": "tick() 시작 또는 N분마다 get_holdings와 pf.positions를 심볼·수량 단위로 대조하고, 불일치 시 텔레그램 경보 + 실계좌 수량 기준으로 장부 보정(축소는 자동, 확대는 사용자 확인). 모든 주문의 order_id/status를 append-only 저널(csv)에 기록해 사후 추적 가능하게 할 것",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   },
+   {
+    "title": "실체결 후 저장까지의 공백 + 비원자적 write_text + 손상 시 무단 전체 초기화(킬 스위치 해제 포함)",
+    "severity": "critical",
+    "evidence": "virtual_buy는 실주문 체결 후 포지션을 메모리에만 기록(run_dryrun.py:570-573)하고 저장은 tick() 끝(run_dryrun.py:848)에서만 — 그 사이 심볼 수십 개의 네트워크 호출이 낀다. Portfolio.save는 self._path.write_text(...) 직접 덮어쓰기(run_dryrun.py:100-108), RiskGuard.save도 동일(risk.py:54), 토큰 캐시도 동일(toss/auth.py:58). 로드 측: Portfolio.load는 json.JSONDecodeError를 'pass'로 삼키고 새 장부 반환(run_dryrun.py:94-95) → positions={}, halted=False, tg_offset=0, realized_pnl=0. risk.py:44-50도 동일하게 초기 DailyState 반환",
+    "impact": "저장 도중 전원단절/kill이면 JSON이 반토막 나고, 다음 시작 때 봇이 '보유 없음·킬스위치 꺼짐·일일손실 0원'으로 조용히 리셋된다. 사용자가 /stop을 걸어둔 상태였다면 크래시 한 번으로 매수가 무단 재개되고, 실보유 포지션 전부가 스탑 관리에서 이탈. tick 도중 크래시면 방금 실체결한 매수가 장부에서 증발(발견 1과 결합해 영구 고아화)",
+    "fix": "저장은 tmp 파일에 쓰고 os.replace()로 원자 교체 + 실체결 직후(virtual_buy/virtual_sell 끝)에 즉시 pf.save() 호출. 로드 실패 시 조용한 초기화 금지 — .bak 롤백을 시도하고 안 되면 기동 중단 + 텔레그램 경보(실전 모드에서 '깨끗한 새 장부'는 가장 위험한 상태다)",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   },
+   {
+    "title": "stop.sh가 python 프로세스를 못 죽여 실전 봇 이중 실행 — 로그에 실제 발생 흔적 있음",
+    "severity": "critical",
+    "evidence": "start.sh:17-18은 'nohup caffeinate -i python3 ... &'의 $!(caffeinate PID)를 watch.pid에 저장, stop.sh:4는 그 PID 하나만 kill — caffeinate는 SIGTERM을 자식 python에 전달하지 않아 python이 고아로 계속 매매한다. 실증: 현재 실행 중인 81936이 PPID=1 고아 상태(ps 확인). logs/watch.log 23:32:37에 구 인스턴스의 틱 헤더와 신 인스턴스의 기동 배너('⚠️ 실전 모드')가 한 줄 간격으로 물려 있음 — 두 실전 인스턴스가 같은 live_state.json에 last-writer-wins로 save(run_dryrun.py:848)하는 구간이 실존했다. run_dryrun.py에는 단일 인스턴스 락이 전혀 없음. 발견 1의 MRNA 체결 증발과 시간대가 겹친다",
+    "impact": "두 인스턴스가 동시에 돌면 (a) 같은 돌파 시그널에 실주문이 2번 나가 예산 2배 초과 매수, (b) 한쪽이 체결한 포지션을 다른 쪽의 오래된 메모리 상태가 덮어써 장부에서 삭제, (c) 텔레그램 getUpdates를 서로 뺏어가 /stop /flat 킬 스위치가 한쪽에 안 닿는다(dryrun_state.json tg_offset=0과 live tg_offset 공존이 방증, notify.py:53-85에 인스턴스 구분 없음)",
+    "fix": "run_dryrun 기동 시 상태파일 기준 fcntl.flock 배타 락을 잡고 실패하면 즉시 종료. stop.sh는 pkill -f 'run_dryrun.py --watch'로 프로세스 그룹 전체를 죽이고 종료 확인 루프를 넣을 것. start.sh는 python 실 PID를 기록",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   },
+   {
+    "title": "RiskGuard 일일 한도가 KST 자정에 리셋 — 미장 세션 한가운데서 손실한도·주문한도가 초기화된다",
+    "severity": "high",
+    "evidence": "risk.py:30-33 roll()은 date.today()(=KST 달력일) 변경 시 orders·realized_pnl을 0으로 리셋하고, check_buy가 매 호출 roll(risk.py:63-64) → 일일손실한도 검사(risk.py:79-81)와 주문횟수 검사(risk.py:82-83)가 자정 직후 무조건 통과. 미장 세션은 KST 22:30~익일 05:00으로 자정을 관통(run_dryrun.py:441-457). 쿨다운도 date.today() 기준(risk.py:84-86,116-118)이라 같은 미장 세션 내 손절 시각이 자정 전이냐 후냐에 따라 재진입 금지 기간이 1~2세션으로 달라짐",
+    "impact": "미장에서 23시대에 손실 5만원(daily_loss_limit)을 채워 매수가 중단돼도, 00:00이 되는 순간 같은 세션 안에서 손실 카운터가 0이 되어 매수가 재개된다 — 하룻밤에 일일손실한도의 2배까지 잃을 수 있다. max_daily_orders 10회도 동일하게 2배가 된다. 과거 사고 2(자정 세션 버그)와 정확히 같은 계열로, 이번엔 안전장치 쪽이 뚫린다",
+    "fix": "DailyState의 기준일을 달력일이 아닌 '그 시장의 trade_date'로 시장별 분리(orders/realized_pnl을 {KR:…, US:…}로)하거나, 최소한 US 세션 진행 중에는 roll을 유예할 것. 아울러 risk_state.json이 live/dryrun/수동 실행에서 같은 파일을 공유(run_dryrun.py:159 → risk.py:39 기본 경로)하는 것도 모드별 파일로 분리 필요 — 드라이런 가상 주문이 실전 주문 카운터를 소모/덮어쓴다",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   },
+   {
+    "title": "pending 예약 주문의 고아화 — 재시작 후 감시 목록에서 빠지면 취소도 실행도 안 되다가 며칠 뒤 낡은 시그널로 체결된다",
+    "severity": "high",
+    "evidence": "_ensure_position_symbols는 pf.positions만 복원(run_dryrun.py:196-212)하고 pf.pending은 보지 않는다. pending은 상태파일에 영속(run_dryrun.py:102)되지만, 심볼 루프는 self.symbols만 순회(run_dryrun.py:837) → 재시작 후 그날 워치리스트에 없는 심볼의 pending은 영원히 잠복. 체결 조건은 pend.get(\"date\") != today 뿐(run_dryrun.py:738-739) — '다음 거래일'인지 검증이 없어 5일 뒤 심볼이 워치리스트에 재등장하면 그 시점 시가로 매수 실행(run_dryrun.py:741-742). 신선도(생성일+1 거래일) 검사 부재",
+    "impact": "NEXT_OPEN 시그널(ma/st 전략)이 만든 매수 예약이 재시작+워치리스트 갱신을 거치면, 시그널 근거가 소멸한 지 며칠 지난 뒤 갑자기 실주문으로 나간다. 현재 vb는 THIS_CLOSE라 잠복 상태지만, 사용자가 백테스트 우위가 확인된 st로 전환하는 순간(로드맵상 검토 중) 즉시 노출 — 과거 사고 1(고아 포지션)과 같은 계열의 '고아 주문' 버그",
+    "fix": "(a) _ensure_position_symbols에서 pf.pending의 심볼도 self.symbols에 복원, (b) pending 체결 시 pend[\"date\"]가 직전 거래일일 때만 실행하고 아니면 폐기+로그, (c) tick 시작 시 N일 이상 묵은 pending은 무조건 폐기",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   },
+   {
+    "title": "환율 0.0이 정상 응답으로 5분 캐시되고, 폴백 1400원은 실환율이 그보다 높으면 예산 초과 매수를 만든다",
+    "severity": "high",
+    "evidence": "toss/client.py:183 get_exchange_rate는 rate 키 누락 시 float(0)을 조용히 반환. DryRun.fx는 성공 경로에서 그 0.0을 _fx_cache에 넣고 _fx_at을 갱신(run_dryrun.py:254-257) — 1400 폴백은 except 분기에서 '_fx_cache가 비었을 때'만(run_dryrun.py:258-260). fx()=0이면 to_krw=0 → exposure_krw의 US 평가액 0(run_dryrun.py:266-274)으로 예산검사 무력화, amount_usd = budget_krw/0 ZeroDivisionError(run_dryrun.py:504)는 process의 광역 except(run_dryrun.py:846-847)에 삼켜져 조용히 반복. 또 LiveBroker.fx는 별도 캐시+폴백 전무(broker.py:47-52)라 같은 주문의 예산검사(러너 fx)와 한도검사(브로커 fx)가 다른 환율을 쓸 수 있음",
+    "impact": "API가 스키마 변경/부분 장애로 rate 없는 200을 주면 미장 예산·노출 계산이 통째로 0이 되어 한도 검사가 형해화된다. 폴백 1400은 실환율 1450이면 amount_usd가 예산 대비 ~3.6% 초과 — '계좌에 돈이 더 있어도 이 이상 절대 못 쓴다'는 예산 불변식이 조용히 깨진다",
+    "fix": "get_exchange_rate에서 rate<=0이면 TossApiError를 던지고, fx()는 '검증된 마지막 값' 외 폴백 금지 — 유효한 환율이 한 번도 없으면 US 매수를 그 틱에서 거부(fail-closed). 러너와 브로커가 하나의 fx 캐시를 공유하도록 통일",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   },
+   {
+    "title": "소수점 잔량 비교 임계 1e-9가 API 6자리 반올림 스케일과 안 맞아 더스트 포지션이 영구 잔존한다",
+    "severity": "medium",
+    "evidence": "run_dryrun.py:623-624 'remaining = pos[\"quantity\"] - qty; if remaining > 1e-9: 잔량 유지'. 그런데 수량의 원천이 전부 1e-6 정밀도: 매수 수량 round(...,6)(run_dryrun.py:505), 주문 바디 f\"{q:.6f}\"(toss/client.py:117), 체결 수량은 API float(broker.py:76). 매도 시 broker.sell이 qty=min(qty, sellable API값)으로 축소(broker.py:151-152)하므로 장부 수량과 실매도 수량이 1e-5~1e-4 스케일로 어긋나는 순간 remaining이 1e-9를 초과",
+    "impact": "0.00007주 같은 더스트가 장부에 남으면: pos.is_open=True라 vb가 그 종목을 영영 재매수하지 않고, 매 틱 스탑 관리·뉴스모니터 LLM 호출 대상이 되며, 청산 시도는 sellable=0 → check_sell '수량 0' 거부(risk.py:101-102)로 무한 재시도 루프. /flat도 이 종목에서 항상 실패해 '전량 청산 완료' 상태에 도달 못 함",
+    "fix": "임계값을 절대 1e-6(또는 잔량 KRW 환산 100원 미만)으로 올리고, 그 이하 잔량은 0으로 간주해 포지션 삭제+더스트 발생 로그. base.py:59 Position.quantity 타입 힌트(int)도 float로 정정",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   },
+   {
+    "title": "토큰 캐시 동시 발급 race — 무효 토큰이 캐시에 24시간 눌러앉고 401 복구 로직이 없어 봇이 '살아있는 척' 전면 마비된다",
+    "severity": "medium",
+    "evidence": "toss/auth.py:47-60 get_access_token은 파일 락 없이 읽기→발급→쓰기. 두 프로세스(발견 3의 이중 실행, 또는 watch 중 scout.py/check_connection.py/--status 수동 실행)가 만료 5분 창(auth.py:17)에 동시 진입하면: A 발급(T1)→B 발급(T2, 스펙상 T1 즉시 무효)→A가 T1을 나중에 캐시에 씀 → 무효 T1이 expires_at 24h로 캐시 고정. toss/client.py:46-49는 401에 대한 재발급/캐시 무효화 없이 raise만. 그 오류는 per-symbol try(run_dryrun.py:846-847)와 캘린더 try(run_dryrun.py:814-816)에 삼켜지고, 하트비트는 API와 무관하게 '정상 가동 중'을 전송(run_dryrun.py:795-806)",
+    "impact": "발생 시 모든 시세·주문·잔고 호출이 실패하는데 텔레그램에는 매시간 '💓 정상 가동 중'이 온다 — 보유 종목 스탑이 하룻밤 내내 방치되어도 사용자는 알 수 없다. 과거 사고 2의 '감시 전면 중단'과 같은 결과가 다른 경로로 재현되는 셈",
+    "fix": "401/403 수신 시 토큰 캐시를 삭제하고 1회 재발급-재시도하는 로직을 client._get/_post에 추가. 토큰 캐시 쓰기는 flock+원자 교체. 하트비트에 '최근 5분 내 API 성공 여부'를 포함해 API 마비 시 💓 대신 🚨를 보내게 할 것",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   },
+   {
+    "title": "/flat·/stop 처리 경로가 tick()에서 try 미보호 — 청산 명령 중 API 예외 한 번에 봇 전체가 죽는다",
+    "severity": "medium",
+    "evidence": "tick()의 self._handle_commands() 호출(run_dryrun.py:820)은 예외 보호가 없다(_idle_wait 쪽은 try로 보호: run_dryrun.py:888-891 — 비대칭). /flat은 virtual_sell → broker.sell → sellable()(broker.py:151) → client._get이 비200에서 TossApiError raise(toss/client.py:46-49) → _handle_commands → tick → watch의 except(run_dryrun.py:917-920)까지 전파되어 '봇 비정상 종료' 알림 후 프로세스 사망",
+    "impact": "사용자가 위기 상황에서 /flat(전량 청산)을 누른 바로 그 순간 일시적 API 오류가 나면, 청산은 일부만 되고 봇 자체가 죽어 나머지 포지션이 무방비 방치된다 — 킬 스위치가 오히려 봇을 죽이는 역설. halted=True 저장도 명령 루프 끝(run_dryrun.py:721)이라 그 전에 죽으면 유실",
+    "fix": "tick 내 _handle_commands 호출도 _idle_wait처럼 try/except로 감싸고, /flat은 심볼별 try로 실패 종목을 건너뛴 뒤 실패 목록을 텔레그램으로 회신+다음 틱 재시도. halted 변경은 명령 수신 즉시 save",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   },
+   {
+    "title": "매수 실패 사유와 무관하게 done_today[:buy]가 찍혀 그날 재시도가 전면 차단된다",
+    "severity": "low",
+    "evidence": "run_dryrun.py:754-756: virtual_buy 호출 결과(거부/미체결)와 무관하게 done_today[f\"{symbol}:buy\"]=today. 실증: logs/live_state.json done_today의 003350/041190/MRVL/MRNA:buy 4건이 모두 live_signals.csv상 '거부'였던 건들(수량 0 거부 — 예수금 부족성 일시 사유). 매도는 '다음 틱에 재시도'(run_dryrun.py:600-602)인 것과 비대칭",
+    "impact": "장 초반 일시적 예수금 부족·지정가 미체결·buying-power API 오류 같은 회복 가능한 사유로 거부돼도, 그날 돌파가 계속 유효한데 재진입 기회를 통째로 잃는다(과거 사고 3 '모더나 못 삼'과 같은 기회손실 계열). 뉴스필터 차단 같은 '의도된 차단'과 일시 오류가 같은 취급",
+    "fix": "done_today 마킹을 virtual_buy의 결과에 따라 분기: 체결·뉴스필터 차단·리스크한도 도달은 마킹, '주문 가능 수량 0'·미체결·API 오류는 마킹하지 않고 다음 틱 재평가 허용(쿨다운 5~10분 정도만)",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   },
+   {
+    "title": "메모리 휘발 상태(_seen_candidates·reported 등)가 재시작·KST 자정마다 리셋되어 LLM 재실행·중복 리포트·워치리스트 유실을 만든다",
+    "severity": "low",
+    "evidence": "_seen_candidates/_seen_date/_last_scout_check는 인스턴스 변수(run_dryrun.py:180-182)로 비영속, _seen_date 비교는 KST 달력일(run_dryrun.py:372-374)이라 미장 세션 중 자정에 후보군이 통째로 '새 얼굴'이 됨. 실증: watch.log 23:32:41 재시작 직후 '[스카우트/US] 새 후보 감지 [30개 전부] → 재평가' + 직후 '국장 종료 — 일일 리포트 발송'(reported=None 리셋, run_dryrun.py:897 — 같은 날 중복 발송). scout.py:216은 날짜가 바뀌면 markets={}로 리셋해 자정 재스카우트가 전날 KR picks를 watchlist.json에서 지움",
+    "impact": "재시작·자정마다 불필요한 전체 LLM 스카우트(비용+새 종목이 세션 한중간에 워치리스트 유입)와 마감 리포트 중복. 자정 재스카우트가 KR picks를 지운 상태에서 크래시 후 재시작하면 KR pending 심볼이 감시 목록에서 빠지는 발견 5의 트리거가 된다",
+    "fix": "_seen_candidates·_seen_date·reported를 Portfolio 상태파일에 영속화하고, _seen_date 리셋 기준을 KST 달력일이 아닌 그 시장의 trade_date로 변경",
+    "dim": "correctness",
+    "verdict": "UNCERTAIN",
+    "verify_note": "검증 누락"
+   }
+  ]
+ },
+ {
+  "dim": "llm",
+  "overall": "역할 경계 설계(LLM은 후보 내 선택과 거부권만, 심볼 화이트리스트 검증, open-fail)는 원칙이 서 있으나, 실효성과 위험 관리의 실제 상태는 원칙에 못 미친다. 가장 근본적인 문제는 LLM 4종 전체가 백테스트에서 엣지 없음(-49.5%, 몬테카를로 손실확률 98.5%)으로 판정된 vb 전략을 장식하고 있다는 것 — 스카우트가 아무리 잘 골라도 실행 전략의 기대값이 음수이고, 실측 3일간 스카우트 pick의 매수 시그널 과반이 예산 불일치로 체결조차 불가했으며, opus 최상위 모델이 매 10분 풀 스카우트로 낭비되고 있다. 위험 측면에서는 '해석만 한다'던 LLM이 뉴스 모니터 경로에서 검증 없는 RSS 헤드라인만으로 시장가 강제청산을 무승인 실행하는 유일한 실권을 쥐고 있고, 모든 LLM·RSS 호출이 매매 루프를 직렬 블로킹해 이 봇의 생명인 돌파 타이밍과 손절 실행을 스스로 갉아먹고 있다 — st 전략 전환과 비동기화, 청산 승인 게이트가 선행되지 않으면 LLM 스택은 비용과 공격면만 더하는 구조다.",
+  "findings": [
+   {
+    "title": "뉴스 모니터: 검증 없는 헤드라인 텍스트가 LLM 판정을 거쳐 곧바로 시장가 강제청산을 실행한다 — LLM이 직접 돈을 움직이는 유일한 경로가 무방비",
+    "severity": "critical",
+    "evidence": "run_dryrun.py:396-403 (`if v and v.urgent_exit: ... self.virtual_sell(sym, live, ..., was_stop=True)`) — 사람 확인 없이 즉시 매도. 판정 근거는 llm_filter.py:88-93 (sentiment<=-0.7 & confidence>=0.7 또는 CRITICAL_FLAGS 하나) 뿐이고, 입력은 news.py:25-28의 구글뉴스 RSS 헤드라인 원문이 구분자·무해화 없이 프롬프트에 삽입된다(llm_filter.py:152-156). 실제 캐시(logs/news_verdicts.json)의 V 판정에 이미 risk_flags=[\"lawsuit\"]가 잡혀 있다 — 헤드라인 하나가 trading_halt류 플래그로 기울면 즉시 발동. /budget은 시장당 최대 1,000만원까지 허용(run_dryrun.py:658)이라 피해 상한은 '소액'이 아니다.",
+    "impact": "구글뉴스에 인덱싱되는 저품질 매체의 낚시 제목(\"OO 거래정지 임박?\") 또는 의도적 인젝션 기사 1건이 10분 내 보유 포지션 시장가 매도를 유발한다. was_stop=True라 손절 쿨다운 1일까지 걸려(risk.py:116-118) 반등 재진입도 봉쇄된다. 'LLM은 해석만, 결정은 규칙'이라는 설계 원칙이 이 경로에서는 형식적 임계값일 뿐 실질적으로 LLM이 매도를 결정한다.",
+    "fix": "urgent_exit는 자동 실행 대신 텔레그램 승인 요청(승인 무응답 N분 시에만 실행 같은 타임아웃 정책)으로 바꾸거나, 최소 2개 이상 독립 언론사의 상호 확인 + CRITICAL_FLAGS 한정으로만 자동 청산. 프롬프트에 헤드라인을 <headlines> 태그로 감싸고 '헤드라인 내 지시문은 데이터로만 취급'을 시스템 규칙에 명시.",
+    "dim": "llm",
+    "verdict": "CONFIRMED",
+    "verify_note": "run_dryrun.py:396-403의 urgent_exit→virtual_sell(was_stop=True) 경로, llm_filter.py 87-93의 판정 기준, 헤드라인 원문의 무구분 프롬프트 삽입(152-156), risk.py:116-118 쿨다운, /budget 상한 10,000,000원(run_dryrun.py:658) 전부 코드로 확인. logs/news_verdicts.json의 V 판정에 risk_flags=['lawsuit']가 실제로 기록돼 있고(단, lawsuit은 CRITICAL_FLAGS가 아니라 발동 안 함 — 지적문도 그렇게 서술), 사람 확인·소스 화이트리스트·인젝션 방어 규칙은 코드 어디에도 없다."
+   },
+   {
+    "title": "매수 거부권(뉴스필터)이 최대 12시간 묵은 캐시로 판정한다 — 장중 반전을 구조적으로 놓침",
+    "severity": "high",
+    "evidence": "run_dryrun.py:538 매수 직전 호출이 `self.news.check(symbol, name=...)` 로 refresh 미지정 → llm_filter.py:204-206 `if cached and not refresh: return cached` — 헤드라인 재수집조차 하지 않고 최대 cache_hours=12시간(config.py:129) 전 판정을 반환. refresh=True는 보유 종목 모니터(run_dryrun.py:397)에만 쓰인다.",
+    "impact": "오전 9시 '중립' 판정을 받은 종목에 정오에 악재가 터져도, 오후 돌파 시그널의 매수는 아침 판정으로 통과한다 — 필터의 존재 이유(당일 악재 차단)가 가장 필요한 순간에 작동하지 않는다. 역방향도 문제: 아침 veto가 12시간 고정되어 장중 해소된 악재에도 하루 종일 매수가 막힌다.",
+    "fix": "매수 경로에도 refresh=True를 적용 — 이미 헤드라인 해시 게이트(llm_filter.py:215-217)가 있어 같은 뉴스면 LLM 호출이 생략되므로 추가 비용은 RSS 1콜 수준. cache_hours도 2~4시간으로 단축.",
+    "dim": "llm",
+    "verdict": "CONFIRMED",
+    "verify_note": "run_dryrun.py:538의 매수 직전 check() 호출은 refresh 미지정이고, llm_filter.py:204-206이 캐시 존재 시 헤드라인 재수집 없이 즉시 반환하며 cache_hours=12(config.py:129)다. refresh=True는 보유 종목 뉴스 모니터(run_dryrun.py:397)에서만 쓰임을 grep으로 확인 — 양방향(악재 미반영/해소된 veto 고착) 모두 코드 구조상 사실."
+   },
+   {
+    "title": "장중 LLM·RSS 호출이 전부 매매 루프를 직렬 블로킹 — 돌파 진입과 -3% 손절 체크가 상시 지연되고, 지연으로 놓친 매수는 done_today 때문에 그날 영구 소멸",
+    "severity": "high",
+    "evidence": "tick() 실행 순서(run_dryrun.py:820-847): _handle_commands(비서 opus 호출 포함) → _refresh_scout(풀 스카우트: 후보 12개 × get_warnings 0.1초 sleep(scout.py:135) + 12 × RSS 각 10초 timeout(scout.py:150, news.py:28) + opus effort=medium 1콜) → _news_monitor(보유 종목별 RSS+opus) → 그 후에야 process()의 돌파/스탑 비교. watch.log 실측: interval=30초 설정인데 틱 간격 63~81초가 다수(작업시간 33~51초). 매수 직전 필터도 인라인(run_dryrun.py:537-540). 그리고 run_dryrun.py:754-756은 virtual_buy가 거부/미체결이어도 done_today를 마킹 — live_state.json에 거부된 MRVL·MRNA의 \"MRVL:buy\": \"2026-08-25\" 마킹이 실제로 남아 있다.",
+    "impact": "돌파 순간 스카우트 갱신이 겹치면 감지가 1~2분 늦고, 그 사이 가격이 오르면 broker.py:128의 지정가(현재가+0.3%) 미체결 → done_today 마킹으로 그날 재시도 불가 = 시그널 통째 유실. 더 위험한 건 손절: 3배 레버리지 SOXL 같은 고변동 종목에서 스탑(-3%) 체크가 1~2분 늦으면 손실이 그대로 확대된다.",
+    "fix": "스카우트·뉴스모니터·비서를 별도 스레드/프로세스로 분리하고 매매 루프는 시세+스탑만 돌린다. 매수 필터 판정은 워치리스트 확정 시점에 선계산해 buy-path에서는 캐시 조회만. done_today는 체결 성공 시에만 마킹하고, 거부 사유별(일시적 vs 영구적) 재시도 정책을 분리.",
+    "dim": "llm",
+    "verdict": "CONFIRMED",
+    "verify_note": "tick() 실행 순서(820-845: _handle_commands→스카우트→_news_monitor→process)와 모든 LLM/RSS 호출의 인라인 블로킹, run_dryrun.py:754-756의 거부 여부 무관 done_today 마킹을 코드로 확인했고, live_state.json에 거부된 MRVL·MRNA의 2026-08-25 마킹이 실재한다. watch.log 실측도 63~81초 틱 50회·최대 133초로 부합 — 다만 장중 틱 2,541회 중 60초 이상은 65회(3%, 중앙값 36초)로 '상시 지연'은 풀 스카우트가 겹치는 ~10분 주기 틱에 국한된 표현상 과장이나, 그 시점이 곧 새 후보 돌파 시점이라 실질 위험 서술은 타당하다."
+   },
+   {
+    "title": "스카우트 실효성 붕괴: '새 후보 시에만 LLM'은 실측상 매 10분 무조건 실행이고, 고른 종목의 과반은 살 수 없으며, '최대 3개'는 하루 누적으로 무의미",
+    "severity": "high",
+    "evidence": "watch.log에서 '새 후보 감지' 30회/이틀 — 타임스탬프가 8/24 22:34~23:56, 8/25 09:04~13:11, 22:32~23:32 모두 ~10분 간격 연속, 즉 체크할 때마다 트리거(거래대금 top-30은 10분마다 반드시 새 얼굴이 등장). _seen_candidates가 메모리 전용(run_dryrun.py:180)이라 재시작마다 리셋 → 23:29:20, 23:32:41 재시작 직후 30개 전원 '새 후보'로 풀 스카우트. 예산 불일치: scout.py:88·104가 후보 가격 캡을 config.LIVE_BUDGET(.env에 키 없음 확인 → 기본 5만원)으로 걸지만 실제 예산은 /budget으로 설정된 budget_base 10만원(live_state.json) — 5만~10만원대 KR 종목은 살 수 있는데 후보에서 배제되고, 반대로 뽑힌 종목은 못 산다: live_signals.csv 매수 시그널 7건 중 4건이 '주문 가능 수량 0' 거부(003350, 041190, MRVL, MRNA). 누적 문제: _apply_watchlist는 추가만 하고 제거 없음(run_dryrun.py:320-324) → 로그상 US 감시 종목이 GOOGL·GLD·BE·TSM·MRVL·AMD·MRNA·SOXL 8개+로 불어남.",
+    "impact": "매 10분 opus medium 호출 낭비(하루 수십 콜), 못 살 종목이 워치리스트와 LLM 선택 슬롯을 점유, 감시 종목 누적 + MAX_POSITION_BUDGET_PCT=1.0(config.py:118) 조합으로 '먼저 돌파한 아무 종목이 예산 독식'하는 비자 사고 패턴이 구조적으로 재발 가능하다.",
+    "fix": "후보 가격 캡과 '매수 가능성' 검사를 실효 예산(budget_base+realized_pnl, 잔여 예산) 기준으로 통일. _seen_candidates를 상태 파일에 영속화. 재평가 트리거를 '상위 10위 내 신규 진입 + 거래대금 임계 초과' 등으로 좁히고, 하루 누적 워치리스트 상한을 둔다.",
+    "dim": "llm",
+    "verdict": "CONFIRMED",
+    "verify_note": "watch.log에서 '새 후보 감지' 72회가 전부 ~10분 간격으로 연속 발생(사실상 체크마다 트리거), 재시작 직후(08-25 23:29:20, 23:32:41) 30개 전원 재감지도 실측 확인, _seen_candidates는 메모리 전용(run_dryrun.py:180). scout.py:88·104의 LIVE_BUDGET 캡(.env에 LIVE_BUDGET_* 없음→기본 5만원)과 실제 budget_base 100,000원(live_state.json)의 불일치, 매수 시그널 초기 7건 중 4건 '주문 가능 수량 0' 거부(live_signals.csv), _apply_watchlist 추가-only(309-326)로 한 세션에 US 감시 12종목+ 누적(AMD·SOXL·MRNA·HOOD·MU·BE·SOXX·GDX·DELL·TSM·SMH·MRK), MAX_POSITION_BUDGET_PCT=1.0 전부 확인."
+   },
+   {
+    "title": "후보 유니버스 편향: 거래대금 상위 30 = 이미 오른 종목과 ETF 천지 — 레버리지·인버스 ETF 무필터로 LLM이 실제로 3배 ETF를 선정했고, 뉴스필터는 이들에게 사실상 꺼져 있다",
+    "severity": "high",
+    "evidence": "watch.log의 US 후보 목록이 SPY/QQQ/TQQQ/SOXL/SOXS/SQQQ/SPXU/VOO/IVV/LQD/HYG/GLD 등 약 2/3가 ETF(레버리지·인버스 포함)이고, build_candidates(scout.py:93-140)에는 가격·경고·상태 필터만 있을 뿐 상품유형 필터가 없다. 실제 watchlist.json에 SOXL(3배 레버리지, score 0.5) 선정됨. 한편 뉴스필터는 한국어 구글뉴스만 조회(news.py:26 hl=ko&gl=KR)하고 헤드라인 3건 미만이면 무판정 통과(llm_filter.py:213-214) — 'SOXL 주가' 한국어 기사로는 상시 미달. 시스템 프롬프트는 '급등 피로 종목 감점'(scout.py:52-57)을 지시하지만 후보 자체가 전부 그런 종목이다.",
+    "impact": "스카우트가 구조적으로 '이미 반영 끝난 모멘텀 추격' 유니버스에 갇힌다. 3배 ETF에 -3% 스탑은 정상 노이즈에 즉사하고(왕복 수수료·슬리피지 포함 기대값 악화), 인버스 ETF(SOXS/SQQQ)가 뽑히면 의도치 않은 시장 숏 포지션이 된다. US 종목·ETF에 대한 매수 거부권은 표본 부족으로 조용히 무력화 — 영어권에서 이미 터진 악재도 한국어 번역 기사 지연(수 시간)만큼 늦게 본다.",
+    "fix": "후보 단계에서 ETF(최소한 레버리지·인버스)를 제외하거나 명시적 허용 목록으로 관리. US 종목은 영문 뉴스 소스(구글뉴스 en-US RSS 등)를 병행. 헤드라인 3건 미만일 때 '통과' 대신 '스카우트 감점/보류' 처리 검토.",
+    "dim": "llm",
+    "verdict": "CONFIRMED",
+    "verify_note": "watch.log US 후보에 SPY/QQQ/TQQQ/SOXL/SOXS/SQQQ/SPXU/VOO/IVV/LQD/HYG/GLD 등 ETF 다수 실재, build_candidates(scout.py:93-140)에 상품유형 필터 부재, watchlist.json에 SOXL(score 0.5) 및 KR 레버리지 ETF 2종까지 실제 선정됨을 확인. news.py:26의 한국어 전용 쿼리와 llm_filter.py:213-214의 3건 미만 무판정 통과도 코드 확인했고, 검증 시점에 fetch_headlines('SOXL 주가')를 직접 실행해 1건만 반환됨을 실증 — SOXL류 ETF에 필터가 실제로 꺼진다(단, MRNA·HOOD 등 개별 US 종목은 한국어 기사 9~12건으로 표본이 충족되므로 'US 종목' 전체로의 일반화는 약간 과장)."
+   },
+   {
+    "title": "뉴스 청산이 해당 종목 시장의 세션을 확인하지 않는다 — KR 장중에 US 보유분을 휴장 시장가 매도 시도",
+    "severity": "medium",
+    "evidence": "_news_monitor(run_dryrun.py:389-403)는 아무 시장이든 열려 있으면(active_any, run_dryrun.py:834-835) 모든 보유 종목을 검사하고, urgent_exit면 virtual_sell → broker.sell이 US는 곧바로 MARKET 주문(broker.py:159-160). 종목별 시장 세션 확인 코드가 없고, last_price는 휴장 중에도 값을 반환한다(run_dryrun.py:487-491).",
+    "impact": "KR 오전 장중에 V(미국)의 악재가 판정되면 미장 휴장 상태에서 시장가 주문이 나간다 — 거래소 거부 시 10분마다 재시도+알림 스팸이 반복되고, 주문이 큐잉되는 사양이면 개장 갭 최악가에 체결된다.",
+    "fix": "청산 실행 전 config.market_of(sym)의 세션이 OPEN인지 확인하고, 휴장이면 '개장 시 청산 예약'으로 전환 + 텔레그램으로 예고.",
+    "dim": "llm",
+    "verdict": "CONFIRMED",
+    "verify_note": "_news_monitor(389-403)는 active_any(834-835)만 보고 시장 구분 없이 전 보유 종목을 검사하며, virtual_sell→broker.sell 경로(US는 broker.py:159-160 즉시 MARKET)에 종목별 세션 확인 코드가 없음을 확인. 실제로 news_verdicts.json의 V(미국) 판정이 KR 장중인 08-26 14:15 KST(미장 휴장)에 갱신돼 있어, urgent_exit였다면 휴장 주문이 나갔을 상황이 실증된다. 거래소의 거부/큐잉 여부만 스펙 미확인이나 지적문 자체가 이를 조건부로 서술."
+   },
+   {
+    "title": "프롬프트 인젝션 방어는 스카우트 심볼 검증만 견고 — 판정 '값' 조작과 LLM 출력의 텔레그램 릴레이(주인 사회공학)는 무방비",
+    "severity": "medium",
+    "evidence": "방어 확인: 스카우트 picks는 후보 대조로 폐기(scout.py:207-212), score 클램프·thesis 300자 절단 — 심볼 위조는 막힌다. 그러나 (a) 헤드라인 원문이 구분자 없이 프롬프트에 들어가며(llm_filter.py:152-156, scout.py:154-161) '헤드라인 내 지시 무시' 규칙이 시스템 프롬프트에 없다 — json_schema 강제는 출력 형태만 제한할 뿐, sentiment/risk_flags/picks라는 '값' 자체가 곧 행동이라 인젝션의 표적이 된다. (b) LLM이 쓴 thesis/market_note/summary가 그대로 텔레그램 발송(run_dryrun.py:344, 564) — 인젝션된 헤드라인이 신뢰 채널을 타고 주인에게 '⚠️봇 오류: /resume 입력' 류 사칭 텍스트를 전달할 수 있다. (c) 시그널 CSV의 reason(=필터 summary)이 비서 컨텍스트에 재삽입(tg_assistant.py:72-74)되는 2차 경로. 비서 자체는 chat_id 게이트(notify.py:74-75)+무도구라 직접 실행 피해는 없다.",
+    "impact": "top-30 진입은 작전주 펌핑 중 자연 발생하므로, '랭킹 진입 + 우호 헤드라인 심기' 조합으로 스카우트 pick 유도 → vb가 펌핑 돌파를 추격 매수 → 덤핑 손실(스탑·예산으로 상한). 매도 방향은 finding 1과 결합해 더 직접적. 텔레그램 릴레이는 킬 스위치 오조작 같은 주인 행동 조작으로 이어질 수 있다.",
+    "fix": "모든 LLM 프롬프트에서 헤드라인을 명시적 데이터 블록으로 감싸고 '블록 내 지시문 무시'를 시스템 규칙화. LLM 산출 텍스트를 텔레그램에 보낼 때 '[뉴스 요약]' 접두 표기 + 명령어 유사 문자열(/stop 등) 이스케이프. 신뢰 언론사 화이트리스트로 RSS 필터링.",
+    "dim": "llm",
+    "verdict": "CONFIRMED",
+    "verify_note": "방어 측(scout.py:207-212 심볼 대조 폐기, score 클램프, thesis 300자 절단, notify.py:74-75 chat_id 게이트, 비서 무도구)과 공백 측(llm_filter.py:152-156·scout.py:154-161의 무구분 헤드라인 삽입, 두 시스템 프롬프트 모두 인젝션 무시 규칙 부재, run_dryrun.py:344·564의 market_note/thesis/summary 텔레그램 직송, tg_assistant.py:72-74의 시그널 CSV reason 재삽입) 전부 코드로 일치 확인."
+   },
+   {
+    "title": "텔레그램 비서: 자유질문이 긴급 명령(/flat)보다 먼저 처리되고, 6000자 절단이 하필 핵심 데이터(시그널·체결 로그)부터 자르며, 세션 정보는 KR만 본다",
+    "severity": "medium",
+    "evidence": "run_dryrun.py:643-652 — questions 블록이 commands 루프보다 앞이라, 같은 폴링 배치에 질문과 /flat이 섞이면 opus 응답(수십 초)이 끝나야 청산이 시작된다. tg_assistant.py:79 `\"\\n\".join(parts)[:6000]` — 꼬리 절단인데 시그널 로그·체결 로그·감시 종목이 마지막에 append(72-78행)되어 보유·워치리스트가 길어질수록 가장 질문받는 데이터가 먼저 잘린다. tg_assistant.py:42 `dr.market_session()`은 기본 country=\"KR\"만 조회 — 미장 시간(밤)에 '세션: CLOSED'로 컨텍스트가 채워져 오답을 유도. pending 주문·done_today·쿨다운 상세도 컨텍스트에 없어 '오늘 왜 안 샀어?'에 정확히 답할 근거가 부족하다.",
+    "impact": "미장 급락 중 '왜 떨어져?' 질문 직후 /flat을 보내면 LLM 응답 시간만큼 전량 청산이 지연된다(30초 틱 봇에서 수십 초는 실질 손실). 절단·누락된 컨텍스트는 '데이터에 없다'는 무의미한 답 또는 환각을 낳아 주인의 상황 판단을 오도한다.",
+    "fix": "commands를 questions보다 먼저 처리(또는 질문 응답을 비동기화). 절단은 전체 꼬리 자르기 대신 항목별 상한(포지션 N줄, 시그널 M줄)으로. market_session을 config.MARKETS 전체에 대해 수집하고 pending/쿨다운/오늘 거부 사유 요약을 컨텍스트에 포함.",
+    "dim": "llm",
+    "verdict": "CONFIRMED",
+    "verify_note": "run_dryrun.py:643-652에서 questions 블록(동기 LLM 호출)이 commands 루프보다 앞에 있고, tg_assistant.py:79의 [:6000]은 앞부분만 남기는 절단이라 마지막에 append되는 시그널/체결 로그·감시 종목(72-78행)이 먼저 잘리며, 41-42행 market_session()은 기본 country='KR'만 조회함을 전부 코드로 확인. pending/done_today/쿨다운 상세도 컨텍스트에 없다(guard.summary는 쿨다운 개수만)."
+   },
+   {
+    "title": "비용 구조: 4종 전부가 최상위 모델(claude-opus-5) 단일 설정 공유 — 20만원 예산 봇에서 LLM 비용이 현실적 기대수익을 넘볼 규모",
+    "severity": "medium",
+    "evidence": "config.py:126의 model 하나를 scout.py:170, llm_filter.py:159, tg_assistant.py:89가 전부 공유. 호출 빈도 실측: 풀 스카우트(후보 12블록+헤드라인, effort=medium) 30회/이틀(watch.log), 뉴스모니터 10분 주기 + 헤드라인 해시가 바뀔 때마다 재호출(RSS는 48시간 창에서 기사 1건만 드나들어도 해시 변경, llm_filter.py:193-195), 자유질문마다 6000자 컨텍스트 opus 1콜.",
+    "impact": "시장당 예산 10만원에서 vb의 현실적 일간 기대손익은 수천 원 단위인데, 최상위 모델로 하루 수십 콜이면 API 비용이 그와 같은 자릿수이거나 초과할 수 있다 — 전략 기대값(-49.5% 백테스트)에 비용까지 얹어 시스템 전체 기대값을 추가로 깎는다. 헤드라인 감성분류와 텔레그램 Q&A는 경량 모델로 충분한 과제다.",
+    "fix": "역할별 모델 분리 설정(필터·모니터·비서=하이쿠/소네트급, 스카우트만 중형) + effort 하향. finding 4의 재실행 조건 강화가 함께 들어가면 호출 수 자체가 수 분의 1로 준다.",
+    "dim": "llm",
+    "verdict": "CONFIRMED",
+    "verify_note": "config.py:126의 model 하나를 scout.py:170·llm_filter.py:159·tg_assistant.py:89가 공유하고 .env의 NEWS_LLM_MODEL은 주석 처리돼 기본 claude-opus-5가 실사용됨(watchlist.json의 model 필드로도 확인). 풀 스카우트 72회/약 3일(지적문의 30회/이틀과 부합), 헤드라인 해시 변경 시 재호출(llm_filter.py:193-195, 215-218)도 코드 확인 — 다만 '-49.5% 백테스트' 수치는 저장소에서 출처를 찾지 못했고 비용-수익 자릿수 비교는 합리적 추정 수준."
+   },
+   {
+    "title": "RiskGuard 일일 한도가 KST 자정에 리셋되어 미장 세션을 반으로 가른다 — 뉴스 강제청산 손실 집계와 상호작용",
+    "severity": "low",
+    "evidence": "risk.py:30-34 roll()이 date.today()(KST) 기준이고 check_buy(risk.py:63-64)·summary(risk.py:122)에서 매번 호출된다. 미장 세션은 22:30~익일 05:00 KST로 자정을 관통한다.",
+    "impact": "자정 전 뉴스청산·손절로 일일 손실 한도(-50,000원)에 도달해도 00:00에 카운터가 리셋되어 같은 미장 세션에서 신규 매수와 추가 손실이 재개된다 — '일일 손실 한도'가 US 세션에는 반나절짜리 한도 2개로 동작한다. 주문 횟수 한도(10회)도 동일.",
+    "fix": "카운터 롤 기준을 달력 날짜가 아니라 시장별 trade_date(market_session이 이미 제공)로 변경.",
+    "dim": "llm",
+    "verdict": "CONFIRMED",
+    "verify_note": "risk.py:30-34의 roll()이 로컬(KST) date.today() 기준으로 orders/realized_pnl을 초기화하고 check_buy(63-64)·summary(122)가 매 호출마다 roll을 실행함을 확인 — 22:30~05:00 KST 미장 세션 중 자정에 일일 손실·주문 한도가 실제로 리셋되어 같은 세션에서 신규 매수가 재개된다(쿨다운만 유지)."
+   }
+  ]
+ },
+ {
+  "dim": "ops",
+  "overall": "애플리케이션 레벨 안전장치(이중 잠금, RiskGuard 이중 검사, 화이트리스트, 예산 상한)는 개인 봇치고 성실하게 쌓았지만, 인프라 레벨 생존성은 그 전부가 \"이 파이썬 프로세스가 이 맥북에서 살아있고 API가 닿는다\"는 단일 가정 위에 서 있다. 그 가정이 깨지는 순간(재부팅·잠자기·IP 변경·토큰 무효화) 스탑로스는 거래소에 존재하지 않으므로 보유 포지션은 무방비가 되고, 하트비트는 오히려 '정상 가동 중'을 보내며, 복구는 전적으로 사람의 수동 개입에 달려 있다 — 게다가 실전 원장은 비원자적 단일 JSON이고 이미 시그널 로그와 불일치가 관측된다. 예산을 늘리기 전에 최소 3종(거래소 측 OCO 스탑, launchd KeepAlive, 외부 데드맨 스위치)은 반드시 갖춰야 하며, 현재 상태는 '소액이라 버티는 것'이지 '무인 운용이 되는 것'이 아니다.",
+  "findings": [
+   {
+    "title": "손절(스탑)이 거래소 예약주문이 아니라 봇 프로세스 메모리에만 존재 — 프로세스가 죽으면 모든 포지션이 무방비",
+    "severity": "critical",
+    "evidence": "broker.py:59 (`order_type = \"LIMIT\" if limit_price else \"MARKET\"` — 즉시체결형 주문만 존재, 조건주문/스탑주문 메서드 없음), toss/client.py:100-133 (place_order에 조건주문 미구현), run_dryrun.py:749-759 (스탑은 30초 틱마다 in-process로 `live <= order.price` 비교해 판정). 실증: logs/watch.log `V: 스탑 대기 365.64 (현재 382.88)` — V는 2026-08-24 진입 후 다일 보유 중인데 스탑은 봇 안에만 있음. CLAUDE.md에 따르면 토스 API는 조건주문(SINGLE/OCO/OTO)을 지원하나 미사용.",
+    "impact": "맥북 재부팅/잠자기/크래시/네트워크 단절 순간, 거래소에는 이 포지션을 지켜줄 주문이 하나도 없다. 미장 야간(KST 22:30~05:00)에 macOS 자동 업데이트 재부팅이 일어나면 V 같은 보유 종목이 급락해도 -3% 손절이 전혀 작동하지 않고, 사용자가 아침에 일어나 수동 재시작할 때까지 수 시간 동안 손실이 무제한으로 커질 수 있다.",
+    "fix": "매수 체결 직후 거래소 측 조건주문(OCO: 손절 스탑 + 익절/종가청산)을 함께 제출하고, 봇 측 트레일링 로직은 그 조건주문을 '정정'하는 방식으로 바꿔라. 봇이 죽어도 최악 손실이 스탑 가격으로 캡핑되는 것이 무인 운용의 최소 요건이다.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "broker.py:59는 LIMIT/MARKET 즉시체결형만 존재하고 client.py place_order(100-133)에 조건주문 타입이 없으며, 스탑은 run_dryrun.py:757-759에서 30초 틱마다 in-process로 `live <= order.price` 비교로만 판정됨을 확인. watch.log에 'V: 스탑 대기' 등 스탑 대기 라인 2,352건이 실재하고 V는 2026-08-24 진입 후 다일 보유 중(live_state.json) — 거래소 측 보호 주문은 전무하다."
+   },
+   {
+    "title": "재시작 자동화 전무 — nohup 1회성 실행, launchd KeepAlive 없음, 크래시 시 '수동 재시작 필요'가 설계",
+    "severity": "critical",
+    "evidence": "start.sh:17 (`nohup caffeinate -i python3 -u run_dryrun.py $FLAGS >> logs/watch.log 2>&1 &` — 1회성), run_dryrun.py:917-920 (크래시 핸들러가 텔레그램으로 `\"맥북에서 재시작이 필요합니다.\"` 전송 후 raise — 복구는 사람 몫), `~/Library/LaunchAgents`에 toss 관련 plist 없음 확인. start.sh:26은 뚜껑 닫힘 대응(`pmset -a disablesleep 1`)조차 사용자 수동 조치로 안내 — `caffeinate -i`는 lid-close 잠자기를 막지 못한다.",
+    "impact": "전원 장애, macOS 자동 업데이트 재부팅, OOM, 뚜껑 닫힘 어느 하나라도 발생하면 봇은 영구 정지하고 finding #1과 결합해 보유 포지션이 스탑 없이 방치된다. 재부팅은 주로 새벽(=미장 정규장)에 일어나므로 최악의 시간대에 최장 공백(사용자 기상까지 5~8시간)이 생긴다.",
+    "fix": "launchd LaunchAgent로 전환하라: `KeepAlive=true` + `RunAtLoad=true` + `ThrottleInterval`로 크래시/재부팅 자동 복구. plist의 ProgramArguments에서 venv 파이썬을 직접 지정하고, 재시작 시 텔레그램으로 '재기동됨' 알림을 보내 수동 개입 여부를 판단하게 하라. 안전을 위해 재기동 직후에는 halted 상태로 시작해 보유분 관리만 하고 신규 매수는 사용자 /resume 후 재개하는 옵션도 고려.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "start.sh:17이 nohup 1회성 실행이고 ~/Library/LaunchAgents에 toss 관련 plist가 없으며(Google plist만 존재, launchctl에도 없음), run_dryrun.py:917-920 크래시 핸들러는 '맥북에서 재시작이 필요합니다' 전송 후 raise로 종료한다. start.sh:26이 뚜껑 닫힘을 sudo pmset 수동 조치로 안내하는 것도 확인 — caffeinate -i가 lid-close 잠자기를 못 막는다는 것은 정확한 macOS 동작이다."
+   },
+   {
+    "title": "실계좌 원장(live_state.json)이 비원자적 쓰기 단일 파일 + 손상 시 '조용히 빈 장부'로 초기화",
+    "severity": "critical",
+    "evidence": "run_dryrun.py:100 (`self._path.write_text(json.dumps(...))` — temp파일+rename 없이 매 틱(30초) 덮어쓰기, run_dryrun.py:848 `self.pf.save()`), run_dryrun.py:94-96 (`except json.JSONDecodeError: pass` — 손상 시 경고·알림 없이 cash=100만/positions={} 기본값으로 시작). 백업 사본 없음. risk_state.json도 동일 패턴 (risk.py:54, 48-49).",
+    "impact": "쓰기 도중 전원 차단/크래시로 JSON이 깨지면 재시작한 봇은 실보유 포지션을 전부 잊는다: (1) virtual_sell이 `if not pos: return`(run_dryrun.py:585-586)이라 보유분을 영영 팔지 못하고, (2) exposure_krw가 0이 되어 예산이 비어 보이므로 이미 보유한 금액 위에 추가 매수해 노출이 2배가 되며, (3) /budget 설정·halted 킬스위치 상태까지 소실된다. 알림이 없어 사용자는 사고를 인지하지 못한다.",
+    "fix": "저장을 원자적으로: tmp 파일에 쓰고 fsync 후 os.replace()로 교체 + 직전 세대 .bak 유지. 로드 실패 시 조용히 넘어가지 말고 .bak 복구를 시도하고, 실전 모드에서는 텔레그램 경보 후 halted 상태로 기동하라. 근본적으로는 기동 시 get_holdings와 대사(finding #6)로 원장을 재구성할 수 있어야 한다.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "run_dryrun.py:100의 save()가 temp+rename 없는 write_text이고 tick 말미(848)마다 호출되며, load(94-95)는 JSONDecodeError를 알림 없이 삼켜 cash=1,000,000(config.INITIAL_CASH)/positions={}/halted=False 기본값으로 시작함을 확인. virtual_sell(585-586)의 `if not pos: return`으로 잊힌 보유분은 영영 매도 불가, risk.py(48-49, 54)도 동일 패턴이며 백업 사본 없음."
+   },
+   {
+    "title": "API 장애가 'CLOSED(휴장)'로 위장되고 하트비트는 계속 '정상 가동 중'을 보냄 — 죽음 감지는 오직 사람의 눈 (dead man's switch 부재)",
+    "severity": "high",
+    "evidence": "run_dryrun.py:814-816 (캘린더 조회 실패 시 `sessions[m] = (\"CLOSED\", {})` 로 폴백), run_dryrun.py:912-914 (전 시장 CLOSED면 `_idle_wait(1800)` — 30분 대기), run_dryrun.py:795-806 (하트비트는 세션 문자열/보유 수만 담고 API 도달성·마지막 성공 호출 시각을 검증하지 않음, 문구는 항상 `정상 가동 중`). 하트비트는 push-only이며 '안 오면 죽은 것'(config.py:96-101 주석)이지만 부재를 감지하는 외부 장치가 없고, notify.send 실패도 silent(notify.py:36-50).",
+    "impact": "미장 보유 중 Toss API만 장애(공유기 재부팅으로 공인 IP 변경→403, 토큰 무효화→401, Toss 5xx)가 나면 봇은 시장을 '휴장'으로 판단해 30분 간격으로 잠들고 스탑 판정을 멈추는데, 텔레그램은 살아 있으므로 매시간 '💓 정상 가동 중'을 보낸다 — 감시가 죽었는데 감시견이 짖지 않는 정반대 신호. 반대로 와이파이 전체 단절이면 하트비트 부재를 사람이 새벽에 알아채야 하는데, 매시간 오는 알림의 '부재'를 사람은 놓친다.",
+    "fix": "(1) 캘린더 실패를 CLOSED가 아닌 별도 DEGRADED 상태로 두고 60초 간격 재시도 + N회 연속 실패 시 '🚨 API 단절' 경보. (2) 하트비트에 '마지막 성공 API 호출 경과시간'을 포함하고 임계 초과 시 문구를 경보로 전환. (3) healthchecks.io/cronitor류 외부 데드맨 스위치에 매 틱 ping을 보내 '핑 부재 → 폰 푸시/전화'가 자동으로 오게 하라 — 부재 감지를 사람에서 기계로 옮기는 것이 핵심이다.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "run_dryrun.py:814-816에서 캘린더 조회 실패가 ('CLOSED', {})로 폴백되고 CLOSED 시장 종목은 842에서 스킵, 전 시장 CLOSED면 913-914에서 _idle_wait(1800)에 들어감을 확인. 하트비트(795-806)는 API 도달성·마지막 성공 호출 검증 없이 항상 '정상 가동 중' 문구를 보내며(세션 문자열에 CLOSED가 찍히긴 하나 사람이 해석해야 함), notify.send(36-50)는 silent-fail이고 하트비트 부재를 감지하는 외부 장치는 없다(config.py:96-101 주석도 '안 오면 죽은 것'이라 인정)."
+   },
+   {
+    "title": "토큰 401/IP 403에 대한 자기복구 경로 없음 — 최대 24시간 블라인드 가능",
+    "severity": "high",
+    "evidence": "toss/auth.py:49-55 (캐시 토큰을 expires_at 시각만 보고 재사용 — 서버측 무효화 감지 없음), toss/client.py:42-49 (_get은 429만 재시도, 401/403 포함 모든 non-200은 즉시 TossApiError raise — 토큰 재발급 시도 없음). CLAUDE.md/auth.py:3 명시: '토큰 재발급 시 이전 토큰 즉시 무효화', expires_in 86400초.",
+    "impact": "사용자가 WTS 콘솔이나 다른 기기에서 토큰을 한 번이라도 재발급하면 러닝 중인 봇의 캐시 토큰이 즉사하고, 봇은 캐시 만료(최대 24시간)까지 모든 API 호출이 401로 실패한다. finding #4와 결합해 이 24시간 동안 세션은 CLOSED로 위장되고 하트비트는 '정상'을 보내며 보유 포지션 스탑 관리가 완전히 멈춘다. IP 변경 403도 동일하게 무한 실패한다.",
+    "fix": "_get/_post에서 401 응답 시 토큰 캐시를 삭제하고 1회 재발급 후 재시도하는 경로를 추가하라. 403(IP 미등록)은 재시도로 해결되지 않으므로 즉시 텔레그램 경보(현재 공인 IP 포함)를 보내 사용자가 WTS 허용 IP를 갱신하게 하라.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "auth.py:49-55는 캐시 토큰을 expires_at(발급+86400초, 마진 300초)만 보고 재사용하며 서버측 무효화를 감지하거나 401 시 캐시를 삭제하는 코드가 어디에도 없음을 확인. client.py:42-49는 429만 재시도하고 401/403 포함 모든 non-200을 즉시 raise — 재발급 시도 경로가 전무해 외부 재발급/IP 변경 시 캐시 만료까지 전 호출이 실패한다."
+   },
+   {
+    "title": "프로덕션 원장에 대한 동시 접근/테스트 주입 방어 없음 — 이미 실전 로그에 '테스트' 체결 행과 원장-로그 불일치가 존재",
+    "severity": "high",
+    "evidence": "logs/live_signals.csv: `2026-08-25T20:42:19 003350 BUY 13210 3 True 변동성돌파 재현 테스트`(KR 장마감 후), `2026-08-25T23:27:49 MRNA BUY 154.15 0.230998 True 돌파 테스트` — 실전 시그널 파일에 executed=True 테스트 행. 현재 live_state.json에 MRNA 포지션은 없는데 done_today에 `\"MRNA:buy\": \"2026-08-25\"` 마커만 남아 있고, 003350 포지션(1주 @14,030)은 어떤 executed=True 시그널 행과도 일치하지 않는다. start.sh:6-9의 PID 가드는 start.sh 경로만 막을 뿐 `python3 run_dryrun.py --once --live` 직접 실행이나 `--reset --live`(run_dryrun.py:974-977, 실행 중에도 원장 삭제)는 막지 못한다.",
+    "impact": "두 번째 --live 프로세스나 테스트 스크립트가 (1) 같은 원장/리스크 카운터를 경합 상태로 덮어쓰고(마지막 저장이 승리 — MRNA처럼 포지션 기록이 유실되면 실계좌에 고아 잔고가 생기고 done_today 마커 때문에 당일 재매수도 막힘), (2) 텔레그램 getUpdates를 서로 뺏어가(notify.py:65-67, offset 경합) 사용자의 /flat /stop 킬스위치가 진짜 봇에 도달하지 않을 수 있다. 장마감 후 나간 테스트 주문이 다음날 아침 실체결되는 시나리오도 배제 못 한다.",
+    "fix": "live 모드는 fcntl.flock으로 원장 파일 배타 잠금을 잡고, 잠금 실패 시 기동 거부하라. 테스트는 별도 상태 디렉터리(--state-dir)와 드라이런 경로만 쓰도록 강제하고, --reset --live는 러닝 프로세스 존재 시 거부하라.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "live_signals.csv에 '변동성돌파 재현 테스트'(2026-08-25T20:42, KR 장마감 후, executed=True)와 '돌파 테스트'(MRNA, executed=True) 행이 그대로 실재하고, live_state.json에는 MRNA 포지션 없이 'MRNA:buy':'2026-08-25' 마커만 남았으며 003350 포지션(1주@14,030)은 어떤 executed=True 행(3주@13,210)과도 불일치함을 확인. start.sh:6-9 PID 가드는 watch.pid만 보고, run_dryrun.py:974-977 --reset은 실행 중 검사 없이 원장을 unlink하며, notify.py:65-67 getUpdates offset 경합도 코드상 사실이다."
+   },
+   {
+    "title": "텔레그램 명령 처리 경로가 tick() 안에서 무방비 — 장애 순간에 /status 한 번이면 봇 전체가 죽는다",
+    "severity": "high",
+    "evidence": "run_dryrun.py:820 (`self._handle_commands()` — tick() 내 호출은 try 없음; _idle_wait 쪽 호출만 보호됨 888-891), /status 처리 중 run_dryrun.py:717 `self.broker.buying_power()` → toss/client.py:46-49에서 non-200 시 TossApiError raise → tick() → watch() 최외곽 except(run_dryrun.py:917-920)까지 전파되어 알림 후 프로세스 종료. /flat도 virtual_sell→broker.sell→sellable(broker.py:44-45) 경유로 동일 경로.",
+    "impact": "사용자가 /status를 보내는 순간은 대개 뭔가 이상해 보일 때(=API가 불안정할 때)다. 바로 그 순간 일시적 5xx 하나로 실전 봇 전체가 종료되고, finding #2(자동 재시작 없음)와 결합해 보유 포지션이 방치된다. 최악의 경우 /flat(비상 청산)을 눌렀는데 청산은 안 되고 봇만 죽는다.",
+    "fix": "tick() 내 _handle_commands 호출을 try/except로 감싸고, 명령 하나의 실패가 다른 명령·매매 루프에 전파되지 않게 명령 단위로 격리하라. /flat은 특히 심볼별 실패를 삼키고 재시도 큐에 넣어야 한다.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "run_dryrun.py:820의 _handle_commands() 호출은 try 미보호(‌_idle_wait 쪽 888-891만 보호)이고, /status가 717에서 broker.buying_power()→client._get(46-49)의 TossApiError를 그대로 전파해 watch() 최외곽 except(917-920)에서 알림 후 raise로 프로세스가 종료됨을 호출 체인으로 확인. /flat도 virtual_sell(598)→broker.sell→sellable(broker.py:151)→_get raise로 동일 경로다."
+   },
+   {
+    "title": "일일 리스크 카운터가 KST 자정에 리셋 — 미장 세션 한복판에서 손실 한도·주문 횟수가 2배로 풀림 (11월 DST 종료 후 악화)",
+    "severity": "medium",
+    "evidence": "risk.py:30-33 (roll이 날짜 바뀌면 orders/realized_pnl 초기화), risk.py:63-64·109·114·122 (전부 `date.today()` = 로컬 KST 달력일 기준). 미장 세션(현재 KST 22:30~익일 05:00)은 자정을 관통하므로 00:00에 daily_loss_limit(-50,000원)과 max_daily_orders(10회)가 세션 중간에 리셋된다. 세션 판정 자체는 캘린더 API 기반이라 DST에 자동 적응하지만(run_dryrun.py:444-464 — 이미 수정된 자정 세션 버그와는 별개의 잔존 이슈), 11월 DST 종료 후 세션이 23:30~06:00이 되면 세션의 약 93%가 자정 이후가 되어 이 창이 사실상 세션 전체로 확대된다.",
+    "impact": "미장에서 자정 전 -50,000원을 찍어 매수가 차단돼도 00:00이 지나면 카운터가 0이 되어 같은 세션에서 추가로 -50,000원까지 손실이 허용된다 — 일일 손실 한도가 설계 의도의 2배로 동작. 주문 횟수 한도(10회)도 동일하게 20회로 풀린다.",
+    "fix": "RiskGuard 카운터의 '하루' 키를 달력일이 아니라 시장 거래일(market_session이 이미 제공하는 trade_date)로 바꾸거나, 최소한 롤 기준 시각을 두 시장 모두 휴장인 KST 07:00으로 옮겨라.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "risk.py:30-33의 roll이 날짜 변경 시 orders/realized_pnl을 0으로 초기화하고, check_buy(63-64)·record_order(109)·record_close(114)·summary(122)가 전부 로컬 date.today() 기준임을 확인 — US 세션(KST 22:30~05:00)이 자정을 관통하므로 daily_loss_limit(-50,000)·max_daily_orders(10)가 세션 중간에 리셋된다. CLAUDE.md에 기록된 기수정 자정 세션 버그(market_session)와는 별개의 잔존 이슈임도 확인. DST 이후 비중 확대는 합리적 시장 상식이다."
+   },
+   {
+    "title": "시크릿 관리: .env 평문 0644(전체 읽기 가능) + 텔레그램 봇 토큰 대화 노출 이력 미회전",
+    "severity": "medium",
+    "evidence": "stat 확인: `.env`가 `-rw-r--r--`(0644)이고 TOSS_CLIENT_ID/SECRET, ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN이 한 파일에 평문 저장. 텔레그램 토큰은 과거 대화에 노출된 이력(운영 사실로 확인됨)이 있으나 회전 흔적 없음. toss/auth.py:58-59는 write_text 후 chmod(0o600)라 생성 순간 umask 기본 권한(0644)으로 잠깐 열리는 창이 있음. (.gitignore는 .env를 커버하고 watch.log에 시크릿 미검출 — 이 부분은 양호.)",
+    "impact": "노출된 텔레그램 봇 토큰만으로도 공격자는 (1) getUpdates를 대신 소비해 사용자의 /flat /stop이 봇에 도달하지 못하게 만들고(킬스위치 무력화 — chat_id 필터 notify.py:74-75는 명령 주입은 막지만 업데이트 탈취는 못 막음), (2) 봇 명의로 가짜 체결/하트비트 메시지를 보내 사용자를 속일 수 있다. 다중 사용자 맥이거나 다른 프로세스가 침해되면 0644 .env에서 토스 주문 자격증명까지 유출된다.",
+    "fix": "지금 즉시 BotFather /revoke로 텔레그램 토큰 회전 + `chmod 600 .env`. 중기적으로 macOS Keychain(`security add-generic-password` / `find-generic-password`)에서 기동 시 읽어오는 방식으로 옮기고, auth.py는 파일 생성 전 os.umask 또는 os.open(mode=0o600)으로 창을 없애라.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "stat 실측으로 .env가 -rw-r--r--(0644)이고 TOSS_CLIENT_ID/SECRET·ANTHROPIC_API_KEY·TELEGRAM_BOT_TOKEN이 한 파일에 평문임을 확인했으며, auth.py:58-59의 write_text 후 chmod(0o600) 순서로 생성 순간 umask 권한 창이 존재하는 것도 코드상 사실. .env는 8/23 이후 미수정으로 회전 흔적이 없다 — 단 '과거 대화 노출' 자체는 저장소 밖의 운영 이력이라 코드로는 검증 불가하나, 검증 가능한 모든 부분이 정확하다."
+   },
+   {
+    "title": "장부↔실계좌 대사(reconciliation) 부재 + 미체결 처리 경로에서 늦은 체결이 유실될 수 있음",
+    "severity": "medium",
+    "evidence": "broker.py:66-94 (_execute: 12초 대기 후 잔량 취소 → 1.5초 후 재조회 1회뿐이며 그 재조회가 TossApiError면 `pass`로 삼켜 filled가 직전 값(0 가능)으로 확정), broker.py:143·run_dryrun.py:550-551 (filled=0이면 None 반환 → '실주문 미체결/거부'로 기록하고 장부 미기재). run_dryrun.py 전체에 get_holdings 기반 정기 대사 없음(수동 --adopt만 존재, 214-249). 실증: 현재 live_signals.csv와 live_state.json이 이미 불일치(MRNA done_today 마커만 존재, 003350 포지션이 어떤 executed 행과도 불일치).",
+    "impact": "취소 직전에 체결된 주문(취소 API가 '이미 체결'로 실패 후 재조회도 실패)은 실계좌에 존재하지만 봇 장부에 없는 고아 포지션이 된다 — 봇은 자기 장부 밖 종목을 팔지 않으므로(run_dryrun.py:585-586) 스탑·청산 관리를 영원히 받지 못하고, 대사가 없어 이 드리프트는 사람이 계좌를 열어보기 전까지 발견되지 않는다.",
+    "fix": "(1) _execute에서 취소 후 최종 상태 확인을 지수 백오프로 수 회 재시도하고, 확인 실패 시 '미확정' 경보를 보내라. (2) 기동 시 + 하루 1회 get_holdings와 장부를 대사해 불일치 시 텔레그램 경보(자동 편입 여부는 사용자 확인)를 보내는 reconcile 루틴을 추가하라.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "broker.py:66-94의 _execute가 12초 대기→취소(예외 pass)→1.5초 후 재조회 1회이고 그 재조회의 TossApiError를 pass로 삼켜 filled가 직전 값(0 가능)으로 확정됨을 확인 — filled=0이면 143에서 None 반환, run_dryrun.py:550-551이 '실주문 미체결/거부'로 기록하고 장부 미기재. run_dryrun.py 전체에 get_holdings 기반 정기 대사가 없고(--adopt 214-249만 존재), MRNA 마커·003350 불일치가 이미 실파일에 존재한다."
+   },
+   {
+    "title": "로그 회전 없음 — watch.log 무한 append(2일 만에 583KB), done_today 딕셔너리도 무한 증가",
+    "severity": "medium",
+    "evidence": "start.sh:17 (`>> logs/watch.log` — 재시작마다 이어붙임, newsyslog/logrotate 설정 없음), 실측 583,686바이트/9,479줄(8/23~8/25, 장중 30초마다 종목별 상태 프린트: run_dryrun.py:819·761-763). done_today(run_dryrun.py:68)는 날짜가 지나도 항목을 삭제하는 코드가 없어 live_state.json에 영구 누적(현재 12개 키). live_signals.csv/live_trades.csv도 무기한 append.",
+    "impact": "당장 디스크 위협(약 9MB/월)은 아니지만 수개월 무인 운용이 목표인 시스템에서 단일 로그 파일이 수백 MB로 커지면 tail/grep 기반 디버깅과 텔레그램 비서의 파일 접근이 느려지고, 문제 발생 시점의 로그를 찾기 어려워진다. 디스크 풀은 최악의 경우 원장 save 실패로 이어진다.",
+    "fix": "print 대신 Python logging + RotatingFileHandler(예: 10MB x 5세대)로 전환하거나, 최소한 /etc/newsyslog.d/에 toss-trader.conf를 추가해 크기 기반 회전을 걸어라. done_today는 RiskGuard 날짜 롤 시점에 오늘 이외 키를 정리하라.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "start.sh:17의 `>> logs/watch.log` append 확인, newsyslog/logrotate 설정 부재 확인, 실측 시점 파일이 이미 1,170,024바이트로 감사 시점(583KB)보다 2배 증가해 추세가 실증됨. done_today는 run_dryrun.py에서 추가(756, 792)만 있고 삭제 코드가 없어 live_state.json에 8/24~25 키 포함 40개가 누적 중(감사의 '12개'는 시점 차이로 오히려 과소평가)."
+   },
+   {
+    "title": "의존성·파이썬 버전 미고정, venv 없음 — Homebrew 업그레이드 한 번이면 재시작이 실패한다",
+    "severity": "medium",
+    "evidence": "requirements.txt:1-3 (`requests>=2.31`, `python-dotenv>=1.0`, `anthropic>=1.0` — 하한만 있는 3줄, lock 파일 없음), start.sh:17이 PATH의 `python3`(현재 /opt/homebrew/bin/python3, 3.13.2) 사용, 프로젝트에 .venv 없음(패키지는 Homebrew 파이썬의 site-packages에 전역 설치).",
+    "impact": "`brew upgrade`가 python@3.13→3.14로 올라가면 site-packages가 통째로 사라지는 것이 Homebrew의 알려진 동작이다. 그 상태에서 봇이 재시작되는 순간(크래시 복구·재부팅 등 가장 불리한 시점) `ImportError: requests`로 기동 자체가 실패한다. anthropic 메이저 업데이트로 LLM 경로 시그니처가 바뀌는 조용한 파손도 가능하다.",
+    "fix": "`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` 후 start.sh(및 launchd plist)가 `.venv/bin/python`을 절대경로로 실행하게 바꿔라. `pip freeze > requirements.lock`으로 정확 버전을 고정하고 업그레이드는 의도적으로만 수행하라.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "requirements.txt가 하한만 있는 3줄(lock 없음), 프로젝트에 .venv/venv 부재, PATH의 python3가 /opt/homebrew/bin/python3(3.13.2)이며 requests가 /opt/homebrew/lib/python3.13/site-packages 전역 설치임을 실측 확인 — 현재 실전 봇 프로세스(PID 81936)도 이 Homebrew 파이썬으로 가동 중. 버전드 site-packages 경로 특성상 python@3.13→3.14 전환 시 패키지 소실 시나리오는 타당하다."
+   },
+   {
+    "title": "버전관리(git) 부재 — 실전 가동 중인 코드를 롤백 수단 없이 프로덕션에서 직접 수정·테스트",
+    "severity": "low",
+    "evidence": "작업 디렉터리가 git 저장소가 아님(확인됨). live_signals.csv의 '재현 테스트'/'돌파 테스트' 행은 실전 파일을 대상으로 코드 실험이 이뤄졌음을 보여준다. .gitignore는 존재하나 저장소 자체가 없어 무의미.",
+    "impact": "수정이 잘못됐을 때 '어제의 동작하던 코드'로 되돌릴 방법이 없고, 사고 조사 시 '그 시점에 어떤 코드가 돌고 있었나'를 재구성할 수 없다. CLAUDE.md의 '주문 코드와 안전장치는 같은 커밋에' 규칙도 커밋이 없으면 강제되지 않는다.",
+    "fix": "`git init` 후 현재 상태를 첫 커밋으로 만들고(.env·logs·data는 이미 .gitignore에 있음), 실전 반영 전 변경은 반드시 커밋을 거치게 하라. 러닝 프로세스가 물고 있는 코드와 디스크의 코드가 달라지는 것도 커밋 해시 로그로 추적 가능해진다.",
+    "dim": "ops",
+    "verdict": "CONFIRMED",
+    "verify_note": "git rev-parse가 'not a git repository'로 확인되고 .gitignore만 존재하며, live_signals.csv의 '재현 테스트'/'돌파 테스트' executed=True 행이 실전 파일 대상 코드 실험을 실증한다 — 롤백 수단과 사고 시점 코드 재구성 수단이 없다는 지적 그대로다."
+   }
+  ]
+ }
+]

@@ -1,0 +1,19 @@
+# 비밀 (절대 커밋 금지)
+.env
+*.pem
+*.key
+
+# 개인 계좌 기록·장부·로그
+logs/
+*.log
+
+# 시세 데이터 캐시 (용량 큼 — 각자 수집)
+data/
+
+# 파이썬
+__pycache__/
+*.pyc
+.venv/
+
+# macOS
+.DS_Store
