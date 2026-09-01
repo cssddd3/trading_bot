@@ -1,160 +1,156 @@
-# toss-trader 프로젝트 컨텍스트
+# toss-trader — Claude Code 인수인계 문서
 
-토스증권 Open API 기반 국내+미국주식 소액 자동매매 봇. 사용자 PC에서 실행.
+토스증권 Open API 기반 국내(KR)+미국(US) 주식 소액 자동매매 봇. 사용자 PC에서 `--watch`
+무한루프로 상주. 사람용 설치·운영 가이드는 [README.md](README.md), 이 파일은 **개발 컨텍스트**다.
 
-## 미장(US) 지원 메모
-- 심볼 구분: 숫자 시작=KR, 영문 시작=US (`config.market_of`). `config.MARKETS`로 시장 on/off
-- 세션: US 정규장 KST 22:30~익일 05:00 (`market-calendar/US`)이나, 토스가 **소수점 주문을
-  마감 1시간 전(04:00)까지만** 받아서 (fractional-quantity-outside-regular-hours, 8/26 실발생)
-  주문 가능 구간을 22:30~04:00으로 재정의: 03:50~04:00 종가판단 창, 04:00 이후 AFTER
-  (매도는 pending 전환). 미장 거래일은 KST 날짜와 다를 수 있음 — trade_date 사용
-- 주문: US 매수는 금액 기반 시장가(orderAmount, 소수점 취득) / 매도는 시장가(소수점은 시장가만 허용).
-  KR은 기존 지정가 방식 유지. 호가: KR 호가단위, US $0.01
-- 한도/예산 검사는 전부 KRW 기준 (환율 `/api/v1/exchange-rate`, baseCurrency/quoteCurrency 필수)
-- 스카우트: 랭킹 상위 100 후보 풀(1콜) → 필터 → LLM에 20개 제시, 3분마다 후보 확인.
-  '새 후보' 트리거는 상위 30만 (하위권 순위 순환 소음 방지), LLM 호출은 15분 스로틀.
-  워치리스트는 `markets: {KR: {...}, US: {...}}` 구조로 시장별 병합
+## 0. 대원칙 (코드보다 우선하는 규칙)
 
-## 현재 상태 (2026-08-27 감사 후 대수술 완료)
-- 6관점 감사(64건 확정, `research/audit_2026-08-27.md`) → 권고 반영 완료:
-  · 검증 게이트: `--live`는 `logs/strategy_validation.json` passed=true인 전략만 기동
-    (`run_backtest.py -t st --validate`로 생성. 우회는 .env LIVE_VALIDATION_OVERRIDE=1)
-  · 기본 전략 vb→st 전환 (vb: OOS -0.96%/건·MC손실 100% 기각 / st: +7.35%/건·0.7% 통과)
-  · 거래소측 손절(조건부주문 SINGLE/MARKET) — 매수 즉시 등록, 매도 전 취소 필수.
-    ⚠️ 소수점 수량(미국 금액매수)은 조건주문 거부됨 → 봇 내 스탑만
-  · 대사(reconcile): 기동 시+1시간마다 장부↔실계좌 비교. 스탑 발동 감지 시 장부 정리,
-    원인불명 불일치 시 halted (stop_order_id 있던 포지션만 발동 추정)
-  · 백스톱 스탑은 _sync_exchange_stop이 '심볼당 정확히 1개+목표 트리거'로 관리
-    (조건주문 list는 status=OPEN 필수! 누락 시 400→빈목록→중복등록 사고가 8/26 실발생).
-    목표 트리거 = min(평단×(1-백스톱율), 전략밴드×0.97) — 전략이 항상 먼저 발동
-  · KR 종가청산은 broker.sell_at_close (동시호가 중 취소 금지, 15:30 매칭 대기)
-  · 장외 세션 매도 → 즉시 주문 대신 pending 다음 시가 예약 (422 루프 방지)
-  · live 인스턴스는 main() 경유만 생성 가능(TT_LIVE_INTENT 내부 플래그) + flock 단일 인스턴스
-    + 장부 원자적 저장(tmp+rename), 손상 시 기동 거부 (테스트는 절대 live 경로 금지!)
-  · 리스크 일자 경계 06:00 KST (미장 자정 리셋 버그 수정) — risk.risk_day()
-  · 뉴스 자동청산은 치명 플래그(거래정지/상폐/분식/횡령)+헤드라인 3건 이상만,
-    감성 악재는 텔레그램 경보만 (사람이 판단)
-  · 스카우트: 레버리지/인버스 ETF·상장 60일 미만 제외, 뉴스필터 캐시 3h
-  · launchd 자동재시작: launchd/com.tosstrader.live.plist (사용자가 load)
-  · 봉 데이터 메모리 캐시 (틱당 400봉 재수집 제거 — 지연 수십초→1초 미만)
+1. **LLM은 해석만, 결정은 규칙.** LLM(스카우트/뉴스필터/비서)은 감시 대상 추천과 매수 거부권만
+   갖는다. 매수 방아쇠는 백테스트 검증을 통과한 가격 규칙만 당긴다.
+2. **검증 게이트 없이는 실돈 없음.** 기준: OOS 거래 ≥30건, OOS 기대값 >0, 몬테카를로(3000회)
+   손실확률 <30%. 어떤 전략/유니버스 변경도 이 게이트를 통과해야 실매수. 커트라인 완화 금지.
+3. **기존 보유 불가침.** 봇은 자기 장부의 종목만 판다. 사용자가 직접 산 주식은 `--adopt`로
+   명시 편입한 것 외엔 절대 건드리지 않는다.
+4. **예산 상한.** 시장별(KR/US) 예산 분리, 실현손익 복리. 계좌에 돈이 더 있어도 초과 사용 불가.
+5. **open-fail.** 모든 부가 기능(LLM/뉴스/공시/스트림/대시보드)은 죽어도 매매를 막지 않는다.
+   단, 조용히 죽으면 안 되는 것은 텔레그램 경보를 보낸다 (크레딧 소진 등).
+6. 주문 코드를 추가할 때는 안전장치(한도 체크)를 **같은 커밋**에 포함한다.
+7. `.env`, `~/.toss_token_cache.json` 절대 커밋 금지. logs/·data/ 도 gitignore (계좌기록/캐시).
+8. 기능 변경 시 README.md(사람용)와 이 파일(개발용)을 **같은 턴에** 갱신한다.
 
-## 반응속도 (2026-08-26 저지연 작업)
-- `toss/stream.py` 웹소켓 실시간 체결가 (declarative full-replace 구독, LOSSY, 계정당 2연결).
-  러너 last_price()가 스트림(10초 신선도) 우선, 낡으면 REST 폴백. 연결 중 장중 틱 8초
-  (`config.STREAM`). websocket-client 미설치/연결실패 시 자동 REST 폴백 (open-fail)
-- 뉴스 소스 2개 병합 (`news.py`): 구글뉴스 검색(넓지만 수분~수십분 지연) +
-  인베스팅닷컴 공개 RSS(분 단위 신선, 종목명 토큰 매칭, 피드캐시 120초).
-  ⚠️ 인베스팅 Pro 구독은 API가 없어 봇 연동 불가 — 공개 피드만 사용
-- `dart.py` DART 전자공시 모니터 (기사보다 빠른 원천, 2분 폴링): 감시/보유 종목 새 공시 →
-  텔레그램 알림 + 보유종목이면 뉴스 재평가 즉시 트리거. 매수 트리거 아님.
-  .env DART_API_KEY 필요 (opendart.fss.or.kr 무료) — 없으면 자동 꺼짐
-- 스카우트 후보확인 10분→3분 (랭킹 1콜, 새 얼굴 있을 때만 LLM, LLM은 15분 스로틀)
-- 원칙 불변: 뉴스/공시는 매수 트리거가 아니다 (거부권+알림+재평가만). 매수는 검증된
-  전략 시그널로만 — "뉴스 보고 올라타기"는 검증 게이트 통과한 전략이 생기기 전엔 금지
-- 뉴스모멘텀(nm) 전략 검증 시도 (2026-08-27, `research/newsmom_backtest.py`) → **기각**:
-  분봉 급등+거래량폭증+신고가 진입, 일별 거래대금 상위20 유니버스(생존편향 방지,
-  DART 상장법인+토스 일봉으로 자체 구축), 99거래일 1분봉 2,807파일.
-  IS 최적 +0.46%/건이 OOS -0.66%/건·승률 33%·MC 손실확률 97.8%로 붕괴
-  (`research/newsmom_result.json`). 급등 추격은 vb에 이어 2번째 데이터 기각 —
-  재도전 시 다른 신호(공시 직후 반응 등)로, 같은 그리드 재탕 금지 (다중검정 편향)
-- 공시눌림목(pullback) 전략 검증 (2026-08-27, 지인 제안, `research/pullback_backtest.py`)
-  → **기각**: 장중 공급계약 공시 400건(KIND에서 공시 시각 확보 — DART list엔 시각 없음,
-  KIND 정정공시만 제외·원본은 유지=look-ahead 방지) 중 진입 23%.
-  IS 전 조합(익절4~7%/손절2~3%) 마이너스, OOS -1.62%/건·승률 8%·MC 손실 100%.
-  기제: 공급계약 팝 후 -2% 눌림은 눌림목이 아니라 전체 되돌림의 시작(92% 손절 종결).
-  강한 종목은 눌리지 않아 진입 자체가 약한 케이스만 선별함. 익절/손절 튜닝으로 구제 불가.
-  다음 후보: DART 유형별 익일 드리프트(자사주취득·임원 장내매수 등, 일봉로 검증 가능)
-- 전환 스캐너 검증 (2026-08-31, `research/scanner_backtest.py`) → **2가지 유니버스 모두 기각**:
-  st 규칙 그대로(튜닝 없음) 유니버스만 확대. ①당일 거래대금 상위100: OOS -4.5%/건·MC 100%
-  (급등 테마주 필터가 됨 — 전환일=폭등일, 익일 갭 매수 후 즉사, vb/nm과 동일 패턴).
-  ②60일 평균 거래대금 상위100(대형주): OOS -5.0%/건·승률 18%·MC 100%.
-  시사점: 2026년 4~8월 KR장에서 '신규 상승 전환' 신호 자체가 레짐상 손실 구간
-  (KODEX·삼전도 7월부터 하락추세). 봇의 저활동은 결함이 아니라 레짐 반영일 가능성.
-  ⚠️ 정정: 거래소 백스톱 트리거는 min(평단-8%, 밴드×0.97) — 밴드보다 항상 아래인 재해용.
-  실질 손절선은 전략 밴드이며 전환 직후엔 -20~40% 아래일 수 있음 (US 소수점은 봇 내 밴드가 유일).
-  스캐너 시뮬의 '-8% 캡'은 실제보다 후한 가정이었고 그래도 기각 — 결론 불변.
-  ⚠️ 스캐너 재도전 시 이 2회 검정을 다중검정 카운트에 포함할 것
-- 전환 스캐너 4년 검증 (long 모드, 3,327종목 83% 커버리지): IS(23~25.8) +0.23%/건 441건,
-  OOS(25.9~26.8) **+3.00%/건** 231건 승률 30% — 메커니즘 자체는 장기 양의 기대값.
-  단 MC 손실확률 30.5% > 30% 커트라인으로 **기각(아슬)**. 우상단 꼬리가 두꺼운 분포
-  (최악5% -95%) — 전액 순차 복리 가정의 MC라 연속 손절에 취약. 실매수 승격 보류,
-  그림자 모드(`config.SCANNER`, KR 마감 후 상위100 전환 기록+알림)로 실증 수집 중.
-  → 2026-08-31 분산 재검증: 포지션당 예산 1/2 가정 MC 손실확률 13.6%(<30% ✅), 1/3이면 9.0%.
-  **사용자 지시로 자동매수 승격** (config.SCANNER auto_buy=True): 15:20 동시호가 스캔 →
-  하루 최대 2건 다음날 시가 매수 예약, 1건당 예산의 position_frac(0.5) 상한 — 이 분할이
-  승격의 전제이므로 frac 제거 금지 (전액이면 손실확률 31%로 기각 조건). 뉴스 거부권·
-  리스크가드·백스톱은 기존 매수와 동일 적용
+## 1. 아키텍처
 
-## 로드맵
-1. ~~읽기 전용 연동~~ ✅
-2. ~~전략 3종(변동성돌파/EMA교차/Supertrend) + 백테스트~~ ✅ `run_backtest.py`
-3. ~~드라이런: 가상 체결 + 시그널 로그 + 안전장치 적용~~ ✅ `run_dryrun.py`
-4. ~~소액 실전: 주문 API + 안전장치 같은 커밋~~ ✅ — 사용자 결정으로 드라이런 관찰 없이 조기 진입.
-   `--live` + .env LIVE_TRADING=1 이중 잠금, LIVE_BUDGET(5만원) 예산 상한,
-   봇 장부 밖 종목 매도 불가(기존 보유 보호), 텔레그램 킬 스위치(/stop /flat)
+```
+run_dryrun.py (러너 = 관제탑, 드라이런/실전 공용)
+ ├─ watch() 무한루프 → tick() 장중 8초(스트림 연결 시)/30초
+ │   tick(): 세션판정 → 텔레그램 명령 → 하트비트 → 대사 → 대시보드 스냅샷
+ │           → 스카우트(PRE 1회+장중 갱신) → DART 폴링 → 전환스캐너(15:20+)
+ │           → 뉴스모니터 → 심볼별 process()
+ ├─ process(심볼): 예약(pending) 체결 → 전략 on_open(장중 스탑/조건주문)
+ │                → 전략 on_close(종가 판단, CLOSING_AUCTION/AFTER 1회)
+ ├─ Portfolio: 장부 (positions/pending/예산/실현손익) — logs/live_state.json 원자적 저장
+ └─ 내장 데몬 스레드: dashboard(웹), toss/stream(웹소켓 시세)
 
-## 구현 메모
-- 전략은 `strategy/base.py`의 on_open(장중 조건부주문)/on_close(종가 판단) 인터페이스.
-  백테스트 엔진과 드라이런이 **같은 메서드**를 호출한다 (미래참조 방지 구조)
-- 백테스트 체결 가정은 보수적: 갭 돌파는 시가 체결, 같은 봉 매수+손절이면 둘 다 체결,
-  수수료 0.015%+거래세 0.15%+슬리피지 0.1%+호가단위 반올림 (`backtest/engine.py`)
-- 캔들은 `before`/`nextBefore` 페이지네이션으로 수년치 수집, `data/*.csv` 캐시 (`toss/data.py`)
-- 리스크 한도·화이트리스트는 `config.py`의 RISK, 검사 로직은 `risk.py`의 RiskGuard.
-  드라이런 상태는 `logs/dryrun_state.json`, 일일 카운터는 `logs/risk_state.json`
-- LLM 모델 역할별 티어링 (2026-08-27, `config.LLM_MODELS`): 스카우트=sonnet-5,
-  뉴스필터/비서=haiku-4-5 (감성분류·요약엔 충분, 비용 1/8~1/10). effort 파라미터는
-  haiku에서 400 → `config.output_config_for()`가 모델별로 자동 처리.
-  스카우트 LLM 호출은 시장당 최소 15분 간격 스로틀 (후보확인 REST는 3분 유지 —
-  스로틀 없인 랭킹 순환으로 하루 150회+ 호출 실측). .env SCOUT_LLM_MODEL 등으로 오버라이드
-- LLM 통합 4종 (전부 open-fail — 키 없으면 자동 꺼짐, 설계 원칙: **LLM은 해석만, 결정은 규칙**):
-  1. `scout.py` 종목 스카우트 — 랭킹 후보군(규칙 필터) 안에서 관심종목 선택 → `logs/watchlist.json`.
-     장전 1회 + 장중 `refresh_minutes`(기본 120분)마다 갱신, 실시간 랭킹 우선(비장중 1d 폴백).
-     갱신 시 새 종목은 추가만, 기존 종목은 그날 계속 감시 (`config.SCOUT`)
-  2. `llm_filter.py` 매수 거부권 — 헤드라인 감성 악재면 매수 차단 (`config.NEWS_FILTER`)
-  3. 뉴스 모니터 (run_dryrun 내) — 장중 새 헤드라인 감지 시 보유종목 재평가 (`config.NEWS_MONITOR`)
-  4. `tg_assistant.py` 텔레그램 비서 — "/"없는 자유 질문에 봇 상태를 읽고 답변.
-     **읽기·설명 전용** (제어는 /stop /resume /flat /status 만, 코드가 결정적 처리).
-     대화 히스토리 `logs/tg_history.json` 영속 (최근 10문답·8천자 상한, 재시작에도 유지.
-     상태 스냅샷은 히스토리에 안 쌓고 system에 매번 최신본만 — 2026-08-27 "맥락 끊김" 수정).
-     긴 대기 중에도 `_idle_wait`가 30초마다 텔레그램 폴링 → 밤에도 응답
-  판정 캐시 `logs/news_verdicts.json` (헤드라인 해시로 중복 호출 방지)
-- 백테스트 `--mc`: 몬테카를로 부트스트랩(3000회)으로 강건성 검증 (`backtest/montecarlo.py`)
-- 웹 대시보드 `dashboard.py` (2026-08-28): 러너 내장 데몬 스레드, 포트 8787 (config.DASHBOARD).
-  러너가 매 틱 `logs/dashboard.json` 스냅샷을 원자적으로 쓰고 서버는 그 파일만 서빙
-  (토스 API 직접 호출 금지 — 토큰/레이트리밋 충돌 방지). 읽기 전용, 제어는 텔레그램만.
-  단독 실행 가능(`python3 dashboard.py` — 마지막 스냅샷 표시), 포트 점유 시 조용히 skip
-- 공유 채널 `notify.broadcast()` (2026-08-28): .env TELEGRAM_BROADCAST_CHAT_ID 설정 시
-  스카우트 픽/매수/매도/공시를 텔레그램 채널로도 발신 (발신 전용, 계좌 수치 제외,
-  명령 수신은 개인 chat_id만). 미설정이면 no-op
-- 무인 운용: `./start.sh [live]`(caffeinate+nohup) / `./stop.sh`, 텔레그램 알림 `notify.py`
-  (매수/매도/차단/마감리포트/크래시). watch 루프는 마감 후에도 다음 영업일까지 대기
-- 편입: `--adopt 심볼,심볼 --live` 로 사용자가 직접 산 종목을 봇 장부에 넣으면
-  봇이 산 것과 동일하게 관리(스탑/뉴스/청산). 명시한 종목만 — 나머지 보유분은 불가침
-- 예산: 텔레그램 `/budget KR 100000` 으로 변경 (장부 파일에 영구 저장, 우선순위:
-  /budget > .env LIVE_BUDGET_* > 기본 5만원). 시장별 분리+실현손익 복리
-- 장부의 종목 + pending 예약 종목은 워치리스트에서 빠져도 `_ensure_position_symbols`가
-  감시를 유지한다 (없으면 자정에 어제 산 종목/예약이 방치 — V로 실제 발생했었음)
-- Claude API 크레딧 소진 시 텔레그램 경보 1회/일 (`_llm_error_alert`, 8/27 실발생:
-  11시간 조용히 LLM 전기능 정지 — 스카우트 실패+뉴스필터 APIStatusError 훅에 연결).
-  크레딧 소진 중에도 매매는 계속 (open-fail: 필터 통과 처리, 스카우트만 정지)
-- 실주문 경로: `broker.py` LiveBroker가 유일한 통로 (RiskGuard 이중 검사, 지정가+0.3% 매수/
-  매도 미체결 시 시장가 재시도). `toss/client.py`의 place_order를 직접 호출하지 말 것
-- 잔고 API는 `/api/v1/assets`가 아니라 **`/api/v1/holdings`** (스펙 확인됨)
+전략 strategy/ (base.py 인터페이스: on_open/on_close)
+ └─ 백테스트 엔진(backtest/engine.py)과 러너가 **같은 메서드** 호출 (미래참조 방지 구조)
 
-## 토스 Open API 핵심 정보
-- Base: `https://openapi.tossinvest.com`
-- 인증: `POST /oauth2/token` (client_credentials). **재발급 시 이전 토큰 즉시 무효화** → `toss/auth.py`가 `~/.toss_token_cache.json`에 캐시 (expires_in 86400초)
-- 시세: `GET /api/v1/prices?symbols=005930,000660` (국내 6자리, 미국 티커, 최대 200개)
-- 캔들: `GET /api/v1/candles?symbol=005930&interval=1d|1m&count=200`
-- 계좌: `GET /api/v1/accounts` / 잔고: `GET /api/v1/assets` (+ `X-Tossinvest-Account: {accountSeq}` 헤더)
-- 주문(추후): 생성/정정/취소 + 조건주문(SINGLE/OCO/OTO), ORDER 그룹 초당 10회
-- 웹소켓: `wss://openapi-ws.tossinvest.com/ws/v1` (체결/호가/주문이벤트, 계정당 2연결, 60초 PING 권장)
-- Rate limit: AUTH 5/s, ACCOUNT 1/s, MARKET_DATA 15/s, CHART 20/s. 429 시 Retry-After 준수 (client.py에 구현됨)
-- IP 화이트리스트: WTS > 설정 > Open API > 허용 IP 관리. 미등록 IP는 403
-- 공식 문서: https://openapi.tossinvest.com/openapi-docs/overview.md , OpenAPI 스펙: https://openapi.tossinvest.com/openapi-docs/latest/openapi.json
-- 모의투자/샌드박스 없음 → 드라이런 모드로 대체
+실주문은 broker.py LiveBroker가 유일한 통로 (RiskGuard 이중 검사).
+toss/client.py의 place_order를 직접 호출하지 말 것.
+```
 
-## 규칙
-- `.env`, `~/.toss_token_cache.json`은 절대 커밋 금지
-- 주문 코드를 추가할 때는 반드시 안전장치(한도 체크)를 같은 커밋에 포함
-- 사용자는 소액 운용이 목표 — 공격적 전략보다 검증과 안전장치 우선
+파일 지도: README §5 참조. 상태 파일:
+- `logs/live_state.json` 실전 장부 (positions/pending/budget_base/realized_pnl/tg_offset/manual_watch).
+  손상 시 live 기동 거부. 테스트는 절대 이 파일을 건드리면 안 됨
+- `logs/risk_state.json` 일일 카운터 (risk_day = KST-6h 날짜 경계, 미장 자정 분절 방지)
+- `logs/watchlist.json` 오늘의 스카우트 픽 / `logs/news_verdicts.json` 뉴스 판정 캐시
+- `logs/strategy_validation.json` 검증 게이트 기록 — passed=true 없으면 --live 기동 거부
+- `logs/dashboard_live.json`(+_dryrun) 대시보드 스냅샷 / `logs/scanner_shadow.csv` 스캐너 기록
+- `logs/tg_history.json` 비서 대화 기억 (10문답/8천자)
+
+안전장치 체인 (매수 1건): 후보 규칙필터 → LLM 선정(감시 추가만) → 전략 가격 시그널
+→ RiskGuard(예산/일일손실/횟수/쿨다운/경고종목) → LLM 뉴스 거부권 → 주문 → 즉시 손절 등록.
+그 외: --live+LIVE_TRADING=1 이중 잠금, TT_LIVE_INTENT(내부 플래그, main()만 세팅 —
+테스트가 실계좌 만지는 사고 방지), flock 단일 인스턴스, 기동+1시간 대사(불일치 시 halted),
+텔레그램 킬스위치(/stop /flat).
+
+## 2. 개발 수칙 + 실사고 사례집 (전부 실제로 겪은 것)
+
+- **자동 치환(sed/replace) 패치 금지에 가깝게 신중히.** 2026-09-01: str.replace 앵커 불일치가
+  조용히 no-op → DART·스캐너 훅이 tick에 연결 안 된 채 "켜짐" 로그만 찍힘. 반드시 Edit 도구
+  (불일치 시 실패) 사용 + 연결 후 **호출 검증 테스트** (tick을 세션 위장으로 돌려 훅 호출 확인)
+- **테스트가 프로덕션을 오염시킨 사고 2회**: mock 테스트가 live_signals.csv에 가짜 행 기록 /
+  가드 테스트가 실계좌에 진짜 조건주문 등록. → 테스트는 dryrun 상태 파일만, 끝나면 삭제.
+  대시보드 스냅샷도 모드별 분리(dashboard_live vs _dryrun)가 그 재발 방지책
+- tick()의 sessions 값은 `(세션문자열, info)` **튜플**. watch()에선 문자열로 변환됨 — 혼동 주의
+- 조건주문 list는 `status="OPEN"` 파라미터 필수 — 누락 시 400→빈목록→중복 등록 (실계좌에
+  스탑 6개 중복됐던 사고). _sync_exchange_stop이 '심볼당 정확히 1개' 보장
+- 미국 소수점 주문은 정규장 마감 1시간 전(04:00 KST)까지만 접수 → US 주문 가능 구간을
+  22:30~04:00으로 재정의 (03:50~04:00 종가판단, 04:00 이후 매도는 pending 전환).
+  소수점 수량은 거래소 조건주문도 거부됨 → 봇 내 밴드 스탑이 유일한 방어선
+- 거래소 백스톱 트리거 = min(평단×(1-8%), 밴드×0.97) — **밴드보다 아래인 재해용**.
+  실질 손절선은 전략 밴드이고 전환 직후엔 -20~40% 아래일 수 있음
+- pending(다음 시가 예약)이 예수금 부족(transient)으로 불발되면 삭제하지 말고 10분 백오프
+  재시도 (예약 유실로 매수 놓친 실사고). pending 종목은 _ensure_position_symbols가 감시 유지
+- 매수 체결 즉시 전략 밴드로 초기 손절선 세팅 (첫 종가판정까지 무방비 구간 방지)
+- KR 종가청산은 broker.sell_at_close — 동시호가 중 취소 금지, 15:30 매칭 대기
+- 잔고 API는 /api/v1/assets가 아니라 **/api/v1/holdings**
+- 뉴스 자동청산은 치명 플래그(거래정지/상폐/분식/횡령)+헤드라인 3건 이상만. 감성 악재는 경보만
+- Claude 크레딧 소진은 하루 1회 텔레그램 경보 (11시간 조용히 LLM 정지했던 실사고).
+  소진 중에도 매매는 계속 (필터는 통과 처리)
+- 대시보드/외부 도구는 토스 API를 직접 부르지 말 것 — 토큰 캐시 공유 시 재발급 경합
+  (재발급하면 이전 토큰 즉시 무효). 러너가 쓴 스냅샷 파일만 읽기
+
+## 3. 전략·검증 현황
+
+**가동 중**
+- `st` Supertrend(ATR10×3, EMA200 필터, RSI<75) — 기본 전략. 검증: OOS 50건 +7.35%/건,
+  MC 손실확률 0.7% ✅. 저회전(월 수 회)이 정상. 전환일 종가 확인 → 다음날 시가 진입,
+  청산은 밴드 이탈/하락 전환. `run_backtest.py -t st --validate`로 게이트 기록 생성
+- **전환 스캐너** (2026-08-31 승격, config.SCANNER): 매일 15:20(동시호가)+ KR 거래대금 상위
+  100 전체를 스캔, '오늘 전환' 종목을 하루 최대 2건 다음날 시가 매수 예약.
+  근거: 4년 백테스트 OOS 231건 +3.00%/건, **포지션당 예산 1/2 분할 가정 MC 13.6%** ✅
+  (전액이면 31%로 기각 — position_frac=0.5가 승격의 전제, 제거 금지).
+  장중 상시 스캔 안 하는 이유: 신호가 일봉 종가 확정 기준 (미완성 캔들 = 가짜 신호)
+
+**기각 이력 (재탕 금지 — 다중검정 카운트에 포함할 것)**
+| 전략 | 결과 | 기제 |
+|---|---|---|
+| vb 변동성돌파 | OOS -0.96%/건, MC 100% | 급등 추격 = 꼭지 매수 |
+| nm 뉴스모멘텀(분봉 급등 올라타기) | OOS -0.66%/건, MC 97.8% | 〃 (research/newsmom_backtest.py) |
+| 공시 눌림목 (지인 제안) | OOS -1.62%/건, 승률 8% | 공급계약 팝 후 눌림 = 되돌림 시작 (pullback_backtest.py) |
+| 스캐너 spike 유니버스(당일 거래대금) | OOS -4.5%/건, MC 100% | 당일 상위 = 어제 폭등 테마주 필터 |
+| KODEX 인버스에 st (숏 대용) | IS -2.57%/건, OOS 0건 | 인버스는 구조적으로 녹는 자산 + 필터가 진입 차단 |
+
+**미검증 후보 대기열**: ① 스캐너 당일 종가 매수 vs 다음날 시가 비교, ② DART 유형별 익일
+드리프트(자사주취득·임원 장내매수 — 학술 근거 있음, 일봉로 검증 가능), ③ 과매도 반등(평균회귀,
+횡보장용). 백테스트 인프라: research/ 의 기존 스크립트 재사용 (유니버스는 생존편향 없이
+'그날의' 랭킹으로 자체 구축 — data/newsmom/daily 120봉 캐시, data/scanner/daily1000 4년봉 83%)
+
+**연구 방법론**: IS/OOS 시계열 분리(커닝 금지), 그리드는 IS에서만, 체결 가정 보수적
+(수수료 0.015%+거래세 0.15%+슬리피지+호가단위+갭 반영), 시뮬에 실전 손절 구조 반영 필수.
+공시 시각은 DART list에 없음 → KIND(kind.krx.co.kr)에서 확보, 정정공시만 제외(원본 유지 =
+look-ahead 방지). LLM에 과거 종목명·날짜를 주면 백테스트 오염(사전지식) 주의
+
+## 4. 서브시스템 메모
+
+- **LLM 티어링** (config.LLM_MODELS): 스카우트=sonnet-5(15분 스로틀), 뉴스필터/비서=haiku-4-5.
+  effort 파라미터는 haiku에서 400 에러 → config.output_config_for()가 처리.
+  스로틀 없인 랭킹 순환으로 하루 150회+ 호출 실측됨
+- **스카우트**: 랭킹 상위 100 풀(1콜) → 규칙 필터(레버리지/인버스·신규상장 60일·경고 제외)
+  → LLM에 20개 제시 → 최대 3픽/시장. '새 후보' 트리거는 상위 30만(하위권 순환 소음).
+  픽은 감시 추가만 — 매수는 전략 시그널로만
+- **뉴스**: 구글뉴스 검색(넓고 느림) + 인베스팅닷컴 공개 RSS(분 단위, 종목명 토큰 매칭) 병합.
+  인베스팅 Pro 구독은 API가 없어 연동 불가. DART 2분 폴링(기사보다 빠름) — 알림+재평가만
+- **시세**: toss/stream.py 웹소켓(declarative full-replace 구독, LOSSY, 계정당 2연결,
+  100구독/연결). last_price()가 스트림(10초 신선도) 우선, REST 폴백
+- **텔레그램**: /stop /resume /flat /status /budget /watch /unwatch + 자유질문(비서, 대화 기억).
+  chat_id 게이트. 공유 채널 notify.broadcast() — 발신 전용, 계좌 수치 제외
+- **대시보드**: dashboard.py 러너 내장 스레드 :8787, 읽기 전용, 스냅샷 파일만 서빙.
+  포트 점유 시 60초마다 재시도 (좀비 프로세스 실사고)
+- **무인 운용**: ./start.sh live (caffeinate+nohup, 5MB 로그 로테이션) / ./stop.sh /
+  launchd plist(자동재시작, 경로는 플레이스홀더 — 사용자별 수정)
+
+## 5. 토스 Open API 핵심
+
+- Base `https://openapi.tossinvest.com` / OAuth client_credentials —
+  **재발급 시 이전 토큰 즉시 무효** → toss/auth.py가 ~/.toss_token_cache.json 캐시 (86400s).
+  같은 키를 두 곳에서 쓰면 서로 죽인다
+- 시세 `GET /api/v1/prices?symbols=` (최대 200) / 캔들 `GET /api/v1/candles` (count≤200,
+  before/nextBefore 페이지네이션, adjusted=true 필수) / 잔고 `GET /api/v1/holdings`
+  / 가용금 get_buying_power(currency) / 랭킹 get_rankings / 환율 exchange-rate
+  (baseCurrency·quoteCurrency 필수) / 캘린더 market-calendar/KR(integrated)·US(regularMarket,
+  세션이 KST 자정 넘음 — previousBusinessDay도 봐야 함)
+- 주문: KR 지정가+0.3% 매수(미체결 시 시장가 재시도) / US 매수는 orderAmount 시장가(소수점),
+  매도는 시장가. 조건주문 SINGLE/MARKET(스탑), list엔 status=OPEN 필수
+- 웹소켓 `wss://openapi-ws.tossinvest.com/ws/v1` (Bearer 헤더, 180초 무수신 종료 → ping 50s)
+- Rate limit: AUTH 5/s, ACCOUNT 1/s, MARKET_DATA 15/s, CHART 20/s. 429 시 Retry-After 준수
+  (client.py 구현). IP 화이트리스트 미등록 = 403
+- 문서: https://openapi.tossinvest.com/openapi-docs/overview.md (모의투자 없음 → 드라이런으로 대체)
+
+## 6. 사용자(운용자) 컨텍스트
+
+- 소액 실험 계정 (예산 KR/US 각 50만원 수준). 공격적 전략보다 검증·안전장치 우선이 방침이나,
+  거래 빈도가 너무 낮은 것에 대한 불만이 반복됨 — 해소는 항상 "검증 통과한 엔진 추가"로
+- 5분 넘는 작업은 시작 전에 소요시간 고지+동의 (30분 수집을 중단시킨 적 있음)
+- 재시작(./stop.sh && ./start.sh live)은 사용자가 누르는 것이 기본 (명시 요청 시 대행 가능)
+- 텔레그램 지인 공유 채널 운영 중일 수 있음 — 계좌 수치는 채널에 내보내지 않는 것 유지
