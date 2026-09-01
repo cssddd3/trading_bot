@@ -4,7 +4,9 @@
 
 ## 1. 필요한 것
 
-- macOS(launchd 자동재시작 사용 시) 또는 리눅스, Python 3.11+
+- macOS / 리눅스 / **윈도우** 모두 지원, Python 3.11+
+  (윈도우는 [python.org](https://www.python.org/downloads/)에서 설치 시
+  **"Add python.exe to PATH" 체크 필수**)
 - 토스증권 계좌 + Open API 키 (아래 발급법)
 - (선택) Anthropic API 키 — AI 스카우트/뉴스필터. 없으면 규칙만으로 동작
 - (선택) 텔레그램 봇 토큰 — 알림/원격제어. 없으면 콘솔 로그만
@@ -45,11 +47,25 @@
 
 ## 3. 설치
 
+**macOS / 리눅스 (터미널)**
+
 ```bash
 git clone https://github.com/cssddd3/trading_bot.git toss-trader && cd toss-trader
 pip3 install -r requirements.txt
 cp .env.example .env
 ```
+
+**윈도우 (PowerShell)** — 시작 메뉴에서 "PowerShell" 검색해 실행
+
+```powershell
+git clone https://github.com/cssddd3/trading_bot.git toss-trader; cd toss-trader
+pip install -r requirements.txt
+Copy-Item .env.example .env
+notepad .env        # 키 입력 후 저장
+```
+
+> 윈도우에서 `git`이 없다고 나오면 https://git-scm.com/download/win 설치.
+> `.ps1` 스크립트가 차단되면 (최초 1회): `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`
 
 `.env`를 열어 발급받은 키를 채운다:
 
@@ -70,12 +86,14 @@ DART_API_KEY=             # 선택
 ## 4. 검증 게이트 통과 (실전 전 필수, 컴퓨터마다 1회)
 
 ```bash
-python3 run_backtest.py -t st --validate
+python3 run_backtest.py -t st --validate    # 윈도우는 python3 대신 python
 ```
 
 `logs/strategy_validation.json`에 passed=true가 기록돼야 `--live`가 기동한다.
 
 ## 5. 실행
+
+**macOS / 리눅스**
 
 ```bash
 ./start.sh          # 드라이런 (가상 체결 — 먼저 이걸로 관찰 권장)
@@ -92,6 +110,24 @@ tail -f logs/watch.log   # 로그 확인
 cp launchd/com.tosstrader.live.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.tosstrader.live.plist
 ```
+
+**윈도우 (PowerShell)**
+
+```powershell
+.\start.ps1          # 드라이런
+.\start.ps1 live     # 실전 (.env LIVE_TRADING=1 필요)
+.\stop.ps1           # 정지
+Get-Content logs\watch.log -Wait -Tail 30   # 로그 실시간 보기
+```
+
+`start.ps1`은 창을 닫아도 유지되는 숨김 프로세스로 돌린다. 유의사항:
+- **절전 끄기 필수**: 설정 > 시스템 > 전원 > 화면·절전 → "전원 연결 시 절전 안 함"
+  (절전에 들어가면 봇도 멈춘다 — 미장 밤 시간대 주의)
+- 재부팅 후 자동 시작: 작업 스케줄러(Task Scheduler) → 기본 작업 만들기 →
+  트리거 "로그온할 때" → 프로그램 `powershell`, 인수
+  `-WindowStyle Hidden -File "C:\내경로\toss-trader\start.ps1" live`
+- 명령 프롬프트(cmd)만 쓴다면: `python -u run_dryrun.py --watch --live >> logs\watch.log 2>&1`
+  (단, 창을 닫으면 봇도 꺼진다 — PowerShell 스크립트 사용 권장)
 
 ## 6. 문제 해결
 

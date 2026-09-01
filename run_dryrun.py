@@ -180,10 +180,16 @@ class DryRun:
             if os.environ.get("TT_LIVE_INTENT") != "yes":
                 raise SystemExit("[!] live 인스턴스는 run_dryrun.py main()을 통해서만 생성 가능 "
                                  "(테스트는 드라이런 경로를 쓸 것)")
-            import fcntl
+            # 단일 인스턴스 잠금 — 이중 실행은 장부를 파괴한다.
+            # macOS/리눅스는 fcntl.flock, 윈도우는 msvcrt.locking (fcntl 없음)
             self._lock_file = open(config.LOG_DIR / "live.lock", "w")
             try:
-                fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    import fcntl
+                    fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except ImportError:                  # Windows
+                    import msvcrt
+                    msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError:
                 raise SystemExit("[!] 실전 봇이 이미 실행 중입니다 (live.lock 점유). "
                                  "이중 실행은 장부를 파괴합니다.")
