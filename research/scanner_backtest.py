@@ -41,7 +41,8 @@ if MODE == "long":                      # 4년 검증: IS 2023~2025.8 / OOS 2025
     WINDOW_START, WINDOW_END, IS_END = "2023-01-02", "2026-08-25", "2025-08-31"
 else:
     WINDOW_START, WINDOW_END, IS_END = "2026-04-01", "2026-08-25", "2026-06-30"
-TOP_N = 100
+import os as _os
+TOP_N = int(_os.getenv("SCANNER_TOPN", "100"))
 MIN_PRICE, MAX_PRICE = 1_000, 450_000
 ATR_N, MULT, TREND, RSI_N, RSI_MAX = 10, 3.0, 200, 14, 75.0   # = config st 그대로
 FEE, TAX, SLIP = 0.00015, 0.0015, 0.001

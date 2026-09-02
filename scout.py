@@ -25,6 +25,8 @@ from toss.client import TossClient
 
 KST = timezone(timedelta(hours=9))
 WATCHLIST_PATH = config.LOG_DIR / "watchlist.json"
+# 감사 H1: 레버리지/인버스 상품 제외 (스카우트·스캐너 공용 — 단일 정의)
+LEVERAGE_WORDS = ("레버리지", "인버스", "2X", "3X", "BULL", "BEAR", "ULTRA", "곱버")
 
 SCHEMA = {
     "type": "object",
@@ -57,20 +59,21 @@ SYSTEM = """너는 자동매매 봇의 종목 스카우트다. 제시된 후보 
 확신이 없으면 적게 고르거나 아예 고르지 마라. 고르지 않는 것도 유효한 답이다."""
 
 
-def _fetch_rankings(client: TossClient, market: str) -> list[dict]:
+def _fetch_rankings(client: TossClient, market: str,
+                    count: int | None = None) -> list[dict]:
     """거래대금 상위 랭킹. 장중엔 실시간, 비장중엔 1d 폴백."""
-    S = config.SCOUT
+    n = count or config.SCOUT["candidate_count"]
     rows = []
     try:
-        rows = client.get_rankings(type=S["candidate_rank_type"], market_country=market,
-                                   duration="realtime", count=S["candidate_count"],
-                                   exclude_caution=True)
+        rows = client.get_rankings(type=config.SCOUT["candidate_rank_type"],
+                                   market_country=market, duration="realtime",
+                                   count=n, exclude_caution=True)
     except Exception:                    # noqa: BLE001 - realtime 미지원/오류 시 폴백
         pass
     if not rows:
-        rows = client.get_rankings(type=S["candidate_rank_type"], market_country=market,
-                                   duration="1d", count=S["candidate_count"],
-                                   exclude_caution=True)
+        rows = client.get_rankings(type=config.SCOUT["candidate_rank_type"],
+                                   market_country=market, duration="1d",
+                                   count=n, exclude_caution=True)
     return rows
 
 
@@ -107,7 +110,6 @@ def build_candidates(client: TossClient, market: str = "KR",
         return []
 
     infos = {i["symbol"]: i for i in client.get_stocks(symbols)}
-    LEVERAGE_WORDS = ("레버리지", "인버스", "2X", "3X", "BULL", "BEAR", "ULTRA", "곱버")
     out = []
     for r in rows:
         sym = r["symbol"]

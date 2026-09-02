@@ -638,6 +638,7 @@ class DryRun:
         self._try_dashboard()
         if not self.dashboard:
             return
+        self._refresh_prices(max_age=60)       # 유휴 루프에서도 시세 신선도 유지
         try:
             import dashboard
             dashboard.write_snapshot(self)
@@ -661,7 +662,11 @@ class DryRun:
                     f"충전: console.anthropic.com → Plans & Billing")
 
     def _shadow_scan(self) -> None:
-        """전환 스캐너(그림자): KR 마감 후 1회, 상위 100에서 '오늘 전환' 탐지 — 기록만."""
+        """전환 스캐너: KR 15:20+ 1회 — '60일 평균 거래대금 상위 top_n'에서 오늘 전환 탐지.
+
+        ⚠️ 유니버스 정의 = 60일 평균 거래대금 (당일 거래대금 아님!) — 4년 검증이
+        이 정의로 통과했고, 당일 기준(spike)은 기각됐다 (어제 폭등 테마주 필터가 됨).
+        실시간 랭킹 상위 pool_n을 후보풀로 받아 일봉으로 60일 평균을 계산해 재랭킹한다."""
         if not config.SCANNER["enabled"]:
             return
         today = now_kst().date().isoformat()
@@ -669,16 +674,26 @@ class DryRun:
             return
         try:
             from strategy import indicators as ta
-            from scout import _fetch_rankings
-            rows = _fetch_rankings(self.client, "KR")[: config.SCANNER["top_n"]]
-            syms = [r["symbol"] for r in rows
+            from scout import _fetch_rankings, LEVERAGE_WORDS
+            # 후보풀 = 시드(전 종목 캐시로 만든 60일 평균 상위 300) ∪ 오늘 실시간 상위 100.
+            # 랭킹 API 상한이 100이라 시드가 몸통, 랭킹은 '새로 뜨는 종목' 유입 통로다.
+            pool = _fetch_rankings(self.client, "KR", count=100)
+            syms = [r["symbol"] for r in pool
                     if 1000 <= float(r["price"]["lastPrice"]) <= 450_000]
-            infos = {i["symbol"]: i for i in self.client.get_stocks(syms)}
-            LEV = ("레버리지", "인버스", "2X", "3X", "곱버")
-            flips = []
+            seed_path = config.DATA_DIR / "scanner" / "universe_seed.json"
+            if seed_path.exists():
+                import json as _json
+                for s_ in _json.loads(seed_path.read_text()).get("symbols", []):
+                    if s_ not in syms:
+                        syms.append(s_)
+            infos = {}
+            for k in range(0, len(syms), 100):   # get_stocks 배치 상한 대응
+                infos.update({i["symbol"]: i
+                              for i in self.client.get_stocks(syms[k:k + 100])})
+            ranked, bars_of = [], {}
             for sym in syms:
                 name = infos.get(sym, {}).get("name", sym)
-                if any(w in name for w in LEV):
+                if any(w in name.upper() for w in LEVERAGE_WORDS):
                     continue
                 try:
                     bars = self.bars_with_today(sym, today)[0]
@@ -686,6 +701,13 @@ class DryRun:
                     continue
                 if len(bars) < 202:
                     continue
+                avg_val = sum(b.close * b.volume for b in bars[-60:]) / min(60, len(bars))
+                ranked.append((avg_val, sym, name))
+                bars_of[sym] = bars
+            ranked.sort(reverse=True)
+            flips = []
+            for _, sym, name in ranked[: config.SCANNER["top_n"]]:
+                bars = bars_of[sym]
                 line, dirs = ta.supertrend(bars, 10, 3.0)
                 closes = [b.close for b in bars]
                 if not (dirs[-1] == 1 and dirs[-2] == -1):
@@ -844,12 +866,33 @@ class DryRun:
         """호가 반올림 — KR: 호가단위, US: $0.01."""
         return round(price, 2) if market == "US" else round_to_tick(price)
 
+    def _refresh_prices(self, max_age: float = 0.0) -> None:
+        """감시+보유 전 종목 시세를 1콜로 배치 조회해 틱 맵에 저장.
+
+        기존엔 심볼마다 REST를 따로 쳐서 틱당 25~30콜(지연 수초)이 들었다 — 검수 효율 항목."""
+        now = time.time()
+        if max_age and now - getattr(self, "_px_ts", 0) < max_age:
+            return
+        syms = sorted(set(self.symbols) | set(self.pf.positions))[:200]
+        if not syms:
+            return
+        try:
+            rows = self.client.get_prices(syms)
+            self._px_map = {r["symbol"]: float(r["lastPrice"]) for r in rows}
+            self._px_ts = now
+        except Exception:                       # noqa: BLE001 - 이전 맵 유지
+            pass
+
     def last_price(self, symbol: str) -> float | None:
         if self.stream:
             px = self.stream.price(symbol, config.STREAM["fresh_secs"])
             if px:
-                return px                        # 실시간 체결가 (초 단위 신선도)
-        try:
+                return px                        # 1순위: 웹소켓 실시간 체결가
+        if time.time() - getattr(self, "_px_ts", 0) < 90:
+            px = getattr(self, "_px_map", {}).get(symbol)
+            if px:
+                return px                        # 2순위: 틱 배치 시세 (틱마다 갱신)
+        try:                                     # 3순위: 개별 REST (감시 밖 종목 등)
             rows = self.client.get_prices([symbol])
             return float(rows[0]["lastPrice"]) if rows else None
         except Exception:                       # noqa: BLE001
@@ -1325,6 +1368,7 @@ class DryRun:
 
         if self.stream:                        # 감시 종목 + 보유 종목 실시간 구독
             self.stream.set_symbols(set(self.symbols) | set(self.pf.positions))
+        self._refresh_prices()                 # 틱당 1콜 배치 시세 (개별 REST 대체)
         self._write_dashboard()
         for m, (sess, _info) in sessions.items():
             if sess == "PRE":
