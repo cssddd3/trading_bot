@@ -173,10 +173,12 @@ class TossClient:
         resp = requests.delete(
             f"{BASE_URL}/api/v1/conditional-orders/{cond_id}",
             headers=self._headers(account_seq), timeout=10)
-        if resp.status_code != 200:
+        # DELETE 성공은 204(No Content)로 올 수 있다 — 9/3 실발생 (성공을 실패로 오인)
+        if resp.status_code not in (200, 204):
             raise TossApiError(
                 f"조건주문 취소 실패 (HTTP {resp.status_code}): {resp.text[:300]}")
-        return resp.json().get("result", {})
+        return (resp.json().get("result", {}) if resp.status_code == 200
+                and resp.text else {})
 
     def get_order(self, account_seq: str, order_id: str) -> dict:
         """주문 상세 (status: SUBMITTED|PARTIAL_FILLED|FILLED|CANCELED..., execution 포함)."""

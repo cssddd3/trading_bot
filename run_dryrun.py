@@ -606,11 +606,28 @@ class DryRun:
             if not v:
                 continue
             if v.urgent_exit:
+                # LLM 플래그만으로 자동청산하지 않는다 — 거래소 데이터로 객관 검증.
+                # (9/3 실발생: 남의 회사 기사로 trading_halt 플래그 → 멀쩡한 씨피시스템
+                #  자동 매도. 운좋게 +8.5% 익절이었지만 오작동은 오작동)
+                confirmed = False
+                try:
+                    info = (self.client.get_stocks([sym]) or [{}])[0]
+                    krd = info.get("koreanMarketDetail") or {}
+                    confirmed = bool(krd.get("krxTradingSuspended")
+                                     or krd.get("liquidationTrading")
+                                     or info.get("status") not in (None, "ACTIVE"))
+                except Exception:           # noqa: BLE001 - 확인 불가면 보수적으로 보류
+                    pass
                 live = self.last_price(sym)
-                if live:
-                    print(f"  [뉴스 모니터] {sym} 치명 악재 → 청산: {v.reason()}")
+                if confirmed and live:
+                    print(f"  [뉴스 모니터] {sym} 치명 악재(거래소 확인됨) → 청산: {v.reason()}")
                     self.virtual_sell(sym, live, f"뉴스 리스크 청산 — {v.reason()}",
                                       was_stop=True)
+                elif v.headlines_hash != self.pf.done_today.get(f"{sym}:newsalert"):
+                    self.pf.done_today[f"{sym}:newsalert"] = v.headlines_hash
+                    notify.send(f"🚨 [{self.tag}] {sym} {self._names.get(sym, '')} "
+                                f"치명 플래그 감지 — 단, 거래소 확인 결과 정지/이상 아님 "
+                                f"→ 자동청산 보류, 직접 판단 요망\n{v.reason()}")
             elif v.alert_exit and not v.headlines_hash == self.pf.done_today.get(f"{sym}:newsalert"):
                 # 감성 악재는 자동 매도 대신 경보 — 판단은 사람이 (/flat 또는 개별 대응)
                 self.pf.done_today[f"{sym}:newsalert"] = v.headlines_hash
