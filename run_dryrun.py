@@ -733,6 +733,13 @@ class DryRun:
                 rsi = ta.rsi(closes, 14)
                 if ema[-1] is None or closes[-1] < ema[-1] or (rsi[-1] or 0) > 75:
                     continue
+                # 바닥권 전환 제외 (9/3 검증): 과거 250일 고점의 70% 미만에서 뜨는
+                # 전환은 IS/OOS 양쪽에서 일관된 손실 구간 (-3.7%/-4.8%/건, 승률 14~20%)
+                # — 깊이 무너진 종목의 '반등'은 대부분 데드캣. 필터 적용 시
+                # OOS +2.49→+4.39%/건, 1/2분할 MC 손실확률 10.7%→4.1%
+                prior_high = max(b.high for b in bars[-251:-1])
+                if closes[-1] < 0.70 * prior_high:
+                    continue
                 flips.append((sym, name, closes[-1]))
                 with open(config.LOG_DIR / config.SCANNER["shadow_csv"], "a") as f:
                     f.write(f"{today},{sym},{name},{closes[-1]:.0f}\n")
