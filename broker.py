@@ -130,14 +130,21 @@ class LiveBroker:
             print(f"  [스탑] 거래소측 손절 등록 실패({symbol}): {e} — 봇 내 스탑만 유지")
             return None
 
-    def cancel_stops_for(self, symbol: str) -> None:
-        """해당 종목의 조건주문 전부 취소 — 매도 직전 반드시 호출 (이중 매도 방지)."""
+    def cancel_stops_for(self, symbol: str, only_id: str | None = None) -> None:
+        """매도 직전 조건주문 취소 (이중 매도 방지).
+
+        검수 D1: only_id가 주어지면 **봇 소유 스탑만** 취소한다 — 사용자가 같은 종목에
+        직접 걸어둔 조건주문을 봇이 지워버리는 사고 방지 (기존 보유 불가침 원칙)."""
         try:
             for c in self.client.list_conditional_orders(self.account_seq):
-                if c.get("symbol") == symbol:
-                    cid = c.get("conditionalOrderId") or c.get("id")
-                    if cid:
-                        self.client.cancel_conditional_order(self.account_seq, cid)
+                if c.get("symbol") != symbol:
+                    continue
+                cid = c.get("conditionalOrderId") or c.get("id")
+                if not cid:
+                    continue
+                if only_id and cid != only_id:
+                    continue
+                self.client.cancel_conditional_order(self.account_seq, cid)
         except TossApiError as e:
             print(f"  [스탑] 조건주문 취소 실패({symbol}): {e}")
 
@@ -164,7 +171,8 @@ class LiveBroker:
             pass
         return out
 
-    def sell_at_close(self, symbol: str, qty: float, deadline_ts: float) -> dict | None:
+    def sell_at_close(self, symbol: str, qty: float, deadline_ts: float,
+                  stop_id: str | None = None) -> dict | None:
         """국내 동시호가(15:20~15:30) 전용 청산 — 주문을 내고 15:30 매칭까지 취소 없이 대기.
 
         감사 C4 대응: 기존 12초 자가취소는 단일가 메커니즘과 양립 불가였다.
@@ -176,7 +184,7 @@ class LiveBroker:
         if not ok:
             print(f"  [종가청산 거부] {symbol} {why}")
             return None
-        self.cancel_stops_for(symbol)          # 스탑과 이중 매도 방지
+        self.cancel_stops_for(symbol, only_id=stop_id)   # 봇 스탑만 취소 (D1)
         order = self.client.place_order(
             self.account_seq, symbol, "SELL", "MARKET", qty,
             client_order_id=f"tt-cls-{uuid.uuid4().hex[:16]}")
@@ -261,9 +269,26 @@ class LiveBroker:
 
         if r["filled"] > 0:
             self.guard.record_order()
-        return r if r["filled"] > 0 else None
+            # 검수 C4: 체결됐는데 평단이 0/누락이면 장부가 오염된다 (0나눗셈·가짜손익).
+            # 재조회로 복구 시도, 실패 시 UNKNOWN으로 승격해 호출부가 halt하게 한다
+            if r.get("avg_price", 0) <= 0:
+                try:
+                    time.sleep(1.5)
+                    od = self.client.get_order(self.account_seq, r["order_id"])
+                    ex = od.get("execution") or {}
+                    r["avg_price"] = float(ex.get("averageFilledPrice") or 0)
+                except Exception:           # noqa: BLE001
+                    pass
+                if r.get("avg_price", 0) <= 0:
+                    r["status"] = "UNKNOWN"
+        # 검수 C3: UNKNOWN(주문 생사 불명)은 None(=미체결) 취급 금지 — 그대로 반환해
+        # 호출부가 halt+경보 처리한다 (10분 뒤 재매수가 이중 매수를 만드는 사고 방지)
+        if r["filled"] > 0 or r.get("status") == "UNKNOWN":
+            return r
+        return None
 
-    def sell(self, symbol: str, qty: float, ref_price: float) -> dict | None:
+    def sell(self, symbol: str, qty: float, ref_price: float,
+         stop_id: str | None = None) -> dict | None:
         """매도 — 반드시 나가야 한다 (손절 포함).
 
         KR: 지정가(-0.5%) → 미체결 시 시장가 재시도.
@@ -276,7 +301,7 @@ class LiveBroker:
             print(f"  [실주문 거부] {symbol} {why}")
             return None
         market = config.market_of(symbol)
-        self.cancel_stops_for(symbol)          # 거래소측 스탑과 이중 매도 방지
+        self.cancel_stops_for(symbol, only_id=stop_id)   # 봇 스탑만 취소 (D1)
 
         if market == "US":
             r = self._execute(symbol, "SELL", qty, None)          # MARKET

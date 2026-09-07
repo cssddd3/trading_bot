@@ -336,21 +336,28 @@ class DryRun:
             return                              # 소수점 수량은 조건주문 미지원
         desired = self._desired_backstop(sym, p)
         stops = self.broker.list_stops_for(sym)
-        good = [s for s in stops if desired > 0 and abs(s[1] - desired) / desired <= 0.02]
-        if len(stops) == 1 and len(good) == 1:
-            p["stop_order_id"] = stops[0][0]
-            return                              # 정확히 1개 + 트리거 일치 — 그대로
-        for cid, trig in stops:                 # 중복/불일치 전부 정리 후 1개 재등록
+        # 검수 D1: 계좌의 조건주문에는 사용자가 직접 건 것이 섞여 있을 수 있다.
+        # 봇 소유(장부의 stop_order_id)만 건드리고, 나머지는 취소 대신 경보만.
+        my_id = p.get("stop_order_id")
+        mine = [s for s in stops if s[0] == my_id]
+        others = [s for s in stops if s[0] != my_id]
+        if others and self.pf.done_today.get(f"{sym}:stopalert") != now_kst().date().isoformat():
+            self.pf.done_today[f"{sym}:stopalert"] = now_kst().date().isoformat()
+            notify.send(f"ℹ️ [{self.tag}] {sym}에 봇 소유가 아닌 조건주문 {len(others)}건 감지 — "
+                        f"직접 거신 거면 그대로 둡니다 (봇은 자기 것만 관리)")
+        if mine and desired > 0 and abs(mine[0][1] - desired) / desired <= 0.02:
+            return                              # 내 스탑 1개 + 트리거 일치 — 그대로
+        for cid, trig in mine:                  # 내 것만 정리 후 1개 재등록
             try:
                 self.client.cancel_conditional_order(self.broker.account_seq, cid)
-                print(f"  [대사] {sym} 조건주문 정리 (trigger {trig:g})")
+                print(f"  [대사] {sym} 봇 조건주문 정리 (trigger {trig:g})")
             except Exception as e:              # noqa: BLE001
                 print(f"  [대사] {sym} 조건주문 취소 실패: {e}")
         cid = self.broker.set_stop(sym, p["quantity"], desired)
         if cid:
             p["stop_order_id"] = cid
             p["backstop_price"] = desired
-            print(f"  [대사] {sym} 거래소측 백스톱 @{desired:g} (1개로 정리)")
+            print(f"  [대사] {sym} 거래소측 백스톱 @{desired:g} (봇 소유 1개)")
 
     def _apply_manual_watch(self) -> None:
         for sym, name in self.pf.manual_watch.items():
@@ -996,11 +1003,27 @@ class DryRun:
         # 실전: 실제 주문 → 실체결 가격/수량으로 기록
         # (KR: 지정가+0.3% / US: 금액 기반 시장가 — 소수점 취득)
         if ok and self.live:
-            fill = self.broker.buy(symbol, qty, price,
-                                   holdings_value=held_value_krw,
-                                   total_exposure=exposure_krw,
-                                   halted=self.pf.halted,
-                                   amount_usd=amount_usd if market == "US" else None)
+            try:
+                fill = self.broker.buy(symbol, qty, price,
+                                       holdings_value=held_value_krw,
+                                       total_exposure=exposure_krw,
+                                       halted=self.pf.halted,
+                                       amount_usd=amount_usd if market == "US" else None)
+            except Exception as e:          # noqa: BLE001 - 검수 C3: 주문 생사 불명
+                # 타임아웃/네트워크 단절 = 주문이 접수됐을 수도 있다 → 재시도 금지,
+                # 매수 중지 + 경보 + 대사가 실계좌와 대조하도록 (이중 매수 사고 방지)
+                self.pf.halted = True
+                notify.send(f"🚨 [{self.tag}] {symbol} 매수 주문 결과 불명({type(e).__name__})"
+                            f" — 이중 매수 방지 위해 매수 중지. 계좌 확인 후 /resume")
+                self.pf.done_today[f"{symbol}:buy"] = now_kst().date().isoformat()
+                return "permanent"
+            if fill and fill.get("status") == "UNKNOWN":
+                # 주문은 나갔는데 체결/취소 확인 실패 — 살아있는 주문일 수 있다
+                self.pf.halted = True
+                notify.send(f"🚨 [{self.tag}] {symbol} 매수 상태 UNKNOWN — 이중 매수 방지 위해 "
+                            f"매수 중지. 계좌 확인 후 /resume (체결됐다면 --adopt {symbol})")
+                self.pf.done_today[f"{symbol}:buy"] = now_kst().date().isoformat()
+                return "permanent"
             if not fill:
                 ok, why = False, "실주문 미체결/거부"
             else:
@@ -1077,9 +1100,11 @@ class DryRun:
             if market == "KR" and sess == "CLOSING_AUCTION":
                 # 동시호가: 취소 없이 15:30 단일가 매칭까지 대기하는 전용 경로
                 deadline = datetime.fromisoformat(sinfo["endTime"]).timestamp() + 90
-                fill = self.broker.sell_at_close(symbol, qty, deadline)
+                fill = self.broker.sell_at_close(symbol, qty, deadline,
+                                 stop_id=pos.get('stop_order_id'))
             else:
-                fill = self.broker.sell(symbol, qty, price)
+                fill = self.broker.sell(symbol, qty, price,
+                        stop_id=pos.get('stop_order_id'))
             if not fill:
                 print(f"  [실주문 매도 실패] {symbol} — 다음 시가 매도 예약")
                 self.pf.pending[symbol] = {"action": "SELL",
@@ -1325,6 +1350,11 @@ class DryRun:
                         self.virtual_sell(symbol, price_now, sig.reason)
                     elif sig.action == Action.BUY and not pos.is_open:
                         self.virtual_buy(symbol, price_now, sig.reason)
+                elif session != "AFTER":
+                    # 검수 E4: 동시호가 중 봉은 미완성 — 15:21의 '전환'이 종가에서 취소될
+                    # 수 있다. NEXT_OPEN 예약은 종가 확정(AFTER) 후에만 확정한다
+                    # (백테스트도 확정 종가만 봤으므로 이게 검증된 타이밍)
+                    print(f"  {symbol}: {sig.action.value} 신호(동시호가 잠정) — 종가 확정 대기")
                 else:
                     prev = self.pf.pending.get(symbol)
                     new_pend = {"action": sig.action.value,
