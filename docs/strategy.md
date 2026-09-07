@@ -1,6 +1,6 @@
 # 전략 가이드
 
-[← README](../README.md) · [설치 가이드](setup.md) · [운영 가이드](operation.md)
+🇰🇷 한국어 · **🇺🇸 [English](strategy.en.md)** · [← README](../README.md) · [설치 가이드](setup.md) · [운영 가이드](operation.md)
 
 ## 대원칙: 검증 게이트
 

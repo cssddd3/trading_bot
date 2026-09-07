@@ -1,6 +1,6 @@
 # 설치 가이드
 
-[← README](../README.md) · [운영 가이드](operation.md) · [전략 가이드](strategy.md)
+🇰🇷 한국어 · **🇺🇸 [English](setup.en.md)** · [← README](../README.md) · [운영 가이드](operation.md) · [전략 가이드](strategy.md)
 
 ## 1. 필요한 것
 

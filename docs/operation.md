@@ -1,6 +1,6 @@
 # 운영 가이드
 
-[← README](../README.md) · [설치 가이드](setup.md) · [전략 가이드](strategy.md)
+🇰🇷 한국어 · **🇺🇸 [English](operation.en.md)** · [← README](../README.md) · [설치 가이드](setup.md) · [전략 가이드](strategy.md)
 
 ## 텔레그램 (제어는 여기서만)
 
