@@ -22,6 +22,7 @@
 | **[운영 가이드](docs/operation.md)** | 텔레그램 명령 · 웹 대시보드 · 예산 · 종목 편입 · 지인 공유 |
 | **[전략 가이드](docs/strategy.md)** | 현재 전략 · 검증 절차 · 전환 스캐너 · 기각된 전략들 |
 | [architecture.html](docs/architecture.html) | 그림으로 보는 전체 구조 (브라우저로 열기) |
+| [프레임워크 비전](docs/framework-vision.md) | 장기 로드맵 — 그래프 조립형 봇 빌더 (미구현) |
 | [CLAUDE.md](CLAUDE.md) | 개발 인수인계 문서 (Claude Code용 컨텍스트) |
 
 ## 아키텍처 한눈에
