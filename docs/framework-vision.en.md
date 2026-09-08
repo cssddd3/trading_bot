@@ -45,8 +45,10 @@ flowchart LR
 ```
 
 Six node kinds: **DataSource** · **Interpreter** (AI — interprets only) ·
-**Signal** (price rules — the only buy trigger) · **Risk** · **Broker** · **Notifier**.
-The direction and type of each edge is itself the permission model.
+**Signal** (price rules — the only buy trigger) · **Risk** · **Broker** · **Notifier**
+(Telegram / Buzz / Discord / Slack etc. — multiple channels at once, with per-channel
+notification tiers such as private vs. shared). The direction and type of each edge is
+itself the permission model.
 
 ## YAML sketch (design draft)
 
