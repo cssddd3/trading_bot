@@ -22,6 +22,7 @@ Toss Securities Open API. Runs on your own PC; notifications and remote control 
 | **[Operation Guide](docs/operation.en.md)** | Telegram commands · web dashboard · budgets · adopting positions |
 | **[Strategy Guide](docs/strategy.en.md)** | Live strategies · validation process · rejected strategies |
 | [architecture.html](docs/architecture.html) | Visual architecture tour (open in a browser, Korean) |
+| [Framework Vision](docs/framework-vision.en.md) | Long-term roadmap — graph-based bot builder (not yet implemented) |
 | [CLAUDE.md](CLAUDE.md) | Developer handover context for Claude Code (Korean) |
 
 ## Architecture at a Glance

@@ -1,6 +1,6 @@
 # 프레임워크 비전 — "누구나 조립하는 AI 트레이딩 봇"
 
-🇰🇷 · [← README](../README.md) · [전략 가이드](strategy.md) · [운영 가이드](operation.md)
+🇰🇷 한국어 · **🇺🇸 [English](framework-vision.en.md)** · [← README](../README.md) · [전략 가이드](strategy.md) · [운영 가이드](operation.md)
 
 > 장기 로드맵 문서다. 현 봇의 운용과는 무관하며, 여기 내용은 아직 구현되지 않았다.
 
@@ -99,3 +99,19 @@ validation:                          # 프레임워크가 강제 — 우회 불�
 | **P4** | 비주얼 에디터 — 웹에서 드래그앤드롭 ↔ YAML 양방향, 검증 결과를 그래프 위에 표시 | 컴맹 사용자 테스트 통과 |
 
 P1부터는 현 봇의 실운용과 병행 — 실계좌를 실험대에 올리지 않는다.
+
+## 국외 확장 기틀
+
+한국 밖 사용자·시장을 처음부터 염두에 둔다:
+
+- **이미 된 것**: 문서 전부 한/영 병행, KR/US 두 시장 동시 운용, 시장별 예산·수수료·세금 분리
+- **브로커 추상화** (P2와 동일 작업): 토스는 broker 노드 구현 중 하나일 뿐 — KIS·Alpaca·IBKR
+  등은 구현체 추가만으로 지원. 호가단위·세금·거래시간은 "시장 프로파일"로 외부화
+- **메시지 카탈로그**: 알림·로그 문자열을 ko/en 카탈로그로 분리 (YAML `locale:` 한 줄로 전환)
+- **커뮤니티**: 계획·논의는 GitHub [Issues](https://github.com/cssddd3/trading_bot/issues)와
+  [Discussions](https://github.com/cssddd3/trading_bot/discussions)에서 공개 진행
+
+## 진행 추적
+
+로드맵 전체: [Discussion #11](https://github.com/cssddd3/trading_bot/discussions/11) ·
+단계별 이슈: [roadmap 라벨](https://github.com/cssddd3/trading_bot/issues?q=label%3Aroadmap)
