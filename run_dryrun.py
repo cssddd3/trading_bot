@@ -1086,6 +1086,8 @@ class DryRun:
         self.pf.positions[symbol] = {
             "quantity": qty, "avg_price": price,
             "entry_date": now_kst().date().isoformat(),
+            "entry_reason": reason.removeprefix("시가 체결: "),
+            "entry_src": "전환 스캐너" if max_frac else f"전략 {self.key}",
             "highest_close": price, "stop_price": None}
         if not self.live:
             self.guard.record_order()           # 실전은 broker가 이미 기록
@@ -1267,38 +1269,7 @@ class DryRun:
                     if px:
                         self.virtual_sell(sym, px, "킬 스위치(/flat) 전량 청산", was_stop=True)
             elif cmd == "/status":
-                lines = [f"[{self.tag}] {'🛑매수중지' if self.pf.halted else '▶️가동중'}"]
-                unreal = 0.0
-                for s, p in self.pf.positions.items():
-                    lines.append("· " + self._position_line(s, p))
-                    live = self.last_price(s) or p["avg_price"]
-                    unreal += self.to_krw(s, (live - p["avg_price"]) * p["quantity"])
-                if self.pf.positions:
-                    lines.append(f"평가손익 합계 {unreal:+,.0f}원")
-                else:
-                    lines.append("보유 없음")
-                for sym, pd in self.pf.pending.items():
-                    lines.append(f"📅 예약: {sym} {self._names.get(sym, '')} "
-                                 f"{pd['action']} (다음 시가) — {pd['reason']}")
-                if self.live and self.broker:
-                    lines.append(f"예산 {self._budget_str()}")
-                    try:
-                        lines.append(f"예수금 KR {self.broker.buying_power('KRW'):,.0f}원"
-                                     f" · US ${self.broker.buying_power('USD'):,.2f}")
-                    except Exception:       # noqa: BLE001
-                        pass
-                watch = [f"{s} {self._names.get(s, '')}" for s in self.symbols
-                         if s not in self.pf.positions]
-                if watch:
-                    lines.append(f"감시 {len(watch)}종목: " + ", ".join(watch[:8])
-                                 + (" 외" if len(watch) > 8 else ""))
-                lines.append(self.guard.summary())
-                feats = [f"시세 {'실시간' if self.stream and self.stream.connected else 'REST'}",
-                         f"공시 {'ON' if self.dart else 'OFF'}",
-                         f"LLM {config.LLM_MODELS['scout'].split('-')[1]}"
-                         f"/{config.LLM_MODELS['filter'].split('-')[1]}"]
-                lines.append(" · ".join(feats))
-                notify.send("\n".join(lines))
+                notify.send(self._status_text())
           except Exception as e:            # noqa: BLE001
             print(f"  [!] 명령({cmd}) 처리 실패: {e}")
             notify.send(f"⚠️ 명령 처리 오류: {cmd} — {type(e).__name__}")
@@ -1589,10 +1560,66 @@ class DryRun:
         r = live / p["avg_price"] - 1
         if config.market_of(s) == "US":
             px = f"@ ${p['avg_price']:,.2f} → ${live:,.2f}"
+            stop = f"${p['stop_price']:,.2f}" if p.get("stop_price") else "-"
         else:
             px = f"@ {p['avg_price']:,.0f} → {live:,.0f}"
-        return (f"{s} {self._names.get(s, '')}: {p['quantity']:g}주 {px} ({r:+.2%}) "
-                f"스탑 {p.get('stop_price') or '-'}")
+            stop = f"{p['stop_price']:,.0f}" if p.get("stop_price") else "-"
+        # 초기 포지션(9-08 이전 매수)은 사유 미기록 — 전부 st/스캐너 전환 진입이었음
+        why = p.get("entry_reason") or "Supertrend 상승 전환"
+        src = p.get("entry_src") or "전략 st"
+        return (f"{'🔺' if r >= 0 else '🔻'} {self._names.get(s, s)} ({s})  {r:+.1%}\n"
+                f"   {p['quantity']:g}주 {px} · 손절 {stop}\n"
+                f"   {p.get('entry_date', '?')} 진입 · {src} — {why}")
+
+    def _status_text(self) -> str:
+        lines = [f"📊 [{self.tag}] {'🛑 매수중지' if self.pf.halted else '▶️ 가동중'}"
+                 f" · {now_kst():%m/%d %H:%M}"]
+        rows, unreal = [], 0.0
+        for s, p in self.pf.positions.items():
+            live = self.last_price(s) or p["avg_price"]
+            unreal += self.to_krw(s, (live - p["avg_price"]) * p["quantity"])
+            rows.append((live / p["avg_price"] - 1, self._position_line(s, p)))
+        if rows:
+            lines.append(f"\n💼 보유 {len(rows)}종목 · 평가손익 {unreal:+,.0f}원")
+            lines += [ln for _, ln in sorted(rows, key=lambda t: -t[0])]
+        else:
+            lines.append("\n💼 보유 없음 — 신호 대기 중 (현금도 포지션)")
+        for sym, pd in self.pf.pending.items():
+            src = "전환 스캐너" if pd.get("frac") else f"전략 {self.key}"
+            lines.append(f"\n📅 내일 시가 {pd['action']} 예약: {self._names.get(sym, sym)} "
+                         f"({sym})\n   {src} — {pd['reason']}")
+        if self.live and self.broker:
+            money = [f"\n💰 예산 {self._budget_str()}"]
+            try:
+                money.append(f"   예수금 KR {self.broker.buying_power('KRW'):,.0f}원"
+                             f" · US ${self.broker.buying_power('USD'):,.2f}")
+            except Exception:               # noqa: BLE001
+                pass
+            lines += money
+        watch = [f"{self._names.get(s) or s}" for s in self.symbols
+                 if s not in self.pf.positions]
+        if watch:
+            lines.append(f"\n👀 감시 {len(watch)}종목: " + ", ".join(watch[:8])
+                         + (" 외" if len(watch) > 8 else ""))
+        note = self._market_note()
+        if note:
+            lines.append(f"\n🌍 오늘의 시황 메모(AI): {note}")
+        lines.append(f"\n⚙️ {self.guard.summary()}")
+        lines.append("   " + " · ".join(
+            [f"시세 {'실시간' if self.stream and self.stream.connected else 'REST'}",
+             f"공시 {'ON' if self.dart else 'OFF'}",
+             f"LLM {config.LLM_MODELS['scout'].split('-')[1]}"
+             f"/{config.LLM_MODELS['filter'].split('-')[1]}"]))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _market_note() -> str:
+        try:
+            d = json.loads((config.LOG_DIR / "watchlist.json").read_text())
+            return d.get("market_note", "") if d.get("date") == now_kst().date().isoformat() \
+                else ""
+        except (OSError, ValueError):
+            return ""
 
     def status(self) -> None:
         expo = self.exposure_krw()

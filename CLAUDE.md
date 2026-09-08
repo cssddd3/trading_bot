@@ -144,6 +144,9 @@ look-ahead 방지). LLM에 과거 종목명·날짜를 주면 백테스트 오�
   하루 1회 워스트 3종목+손절선 거리 통지).
   비서 컨텍스트(tg_assistant.build_context)에 pending 예약·스캐너 CSV 포함 (9-08: HD현대 예약을
   비서가 부인한 동문서답 사고 수리 — 새 상태를 추가하면 비서 컨텍스트에도 넣을 것).
+  /status는 _status_text()로 분리(테스트 가능) — 수익률순 정렬, 포지션별 entry_reason/entry_src
+  (virtual_buy가 저장, 9-08 이전 포지션은 없어서 'Supertrend 상승 전환' 폴백), AI 시황 메모
+  (_market_note = watchlist.json market_note, 당일 것만) 포함.
   chat_id 게이트. 공유 채널 notify.broadcast() — 발신 전용, 계좌 수치 제외
 - **대시보드**: dashboard.py 러너 내장 스레드 :8787, 읽기 전용, 스냅샷 파일만 서빙.
   포트 점유 시 60초마다 재시도 (좀비 프로세스 실사고)

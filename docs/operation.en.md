@@ -6,7 +6,7 @@
 
 | Command | Action |
 |---|---|
-| `/status` | Holdings (live P&L, stop levels) · pending orders · watchlist · budgets · cash |
+| `/status` | Holdings (sorted by return, with entry date & signal reason) · pending orders · budgets · cash · watchlist · AI market note |
 | `/stop` | Pause new buys (existing positions keep being managed) |
 | `/resume` | Resume buying |
 | `/flat` | Liquidate everything (kill switch) |
