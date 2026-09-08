@@ -1,0 +1,53 @@
+# PR 가드레일 — 모든 PR에서 자동 실행 (포크 PR은 읽기 전용 토큰이라 시크릿 접근 불가)
+name: PR check
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 컴파일 검사
+        run: python -m compileall -q .
+
+      - name: 위험 패턴 검사 (비밀파일·우회 시도)
+        run: |
+          set -e
+          # .env / 토큰 캐시 / 계좌 기록이 커밋되면 실패
+          if git ls-files | grep -E '(^|/)\.env$|toss_token_cache|^logs/|^data/'; then
+            echo "::error::비밀/계좌 파일이 커밋에 포함됨"; exit 1
+          fi
+          # 검증 게이트 우회 흔적: strategy_validation 기록을 코드로 조작하려는 시도
+          if git diff origin/${{ github.base_ref }}...HEAD -- . ':!.github' | \
+             grep -E '^\+.*strategy_validation\.json.*(write|dump|passed)'; then
+            echo "::error::검증 게이트 기록을 코드로 쓰려는 변경 — 게이트는 run_backtest --validate만 기록 가능"; exit 1
+          fi
+          # broker.py 외 신규 주문 경로 (place_order 직접 호출) 금지
+          if git diff origin/${{ github.base_ref }}...HEAD -- . ':!broker.py' ':!toss/client.py' ':!.github' | \
+             grep -E '^\+.*place_order\('; then
+            echo "::error::broker.py 밖에서 place_order 직접 호출 — 실주문은 LiveBroker 단일 통로"; exit 1
+          fi
+
+      - name: 의존성 취약점 검사
+        run: |
+          pip install -q pip-audit
+          pip-audit -r requirements.txt --strict || {
+            echo "::warning::의존성 취약점 발견 — 머지 전 확인 필요"; exit 1; }
+
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 새로 추가되는 의존성 심사 (악성/취약 패키지 차단)
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate

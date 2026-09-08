@@ -180,6 +180,11 @@ look-ahead 방지). LLM에 과거 종목명·날짜를 주면 백테스트 오�
 침범하지 않게 유지한다 — 예: AI 코드에 매수 로직 넣지 않기, broker 외 주문 경로 만들지 않기
 (이미 대원칙과 일치). P1(YAML 로더)부터는 사용자와 시점 합의 후 착수. 실운용과 병행 원칙.
 
+**저장소 가드레일** (9-08): secret scanning+push protection, Dependabot, CodeQL, main
+강제푸시·삭제 금지, 비공개 취약점 제보 ON. PR CI(.github/workflows/pr-check.yml)가 컴파일·
+비밀파일·게이트 우회(strategy_validation 쓰기)·broker 외 place_order·의존성 취약점을 차단.
+PR 머지는 소유자만 — 머지 전 broker.py/toss/·.github 변경은 반드시 직접 검토.
+
 **계획은 GitHub에 공개 게시** (사용자 지시): 새 계획·연구 후보·검수 항목이 생기면 이슈로
 (라벨: roadmap/strategy-research/audit/global), 큰 방향은 Discussions로. 로드맵 허브는
 Discussion #11. 완료 시 이슈 닫고, 기각된 전략도 근거와 함께 이슈에 기록 (재탕 방지 공개 원장).
