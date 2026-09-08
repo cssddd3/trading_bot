@@ -2,6 +2,12 @@
 
 🇰🇷 한국어 · **🇺🇸 [English](README.en.md)**
 
+![Python](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-macOS%20·%20Linux%20·%20Windows-lightgrey)
+[![Roadmap](https://img.shields.io/badge/roadmap-Discussions-blueviolet?logo=github)](https://github.com/cssddd3/trading_bot/discussions/11)
+[![Issues](https://img.shields.io/github/issues/cssddd3/trading_bot?logo=github)](https://github.com/cssddd3/trading_bot/issues)
+
 토스증권 Open API로 국내(KR)+미국(US) 주식을 소액으로 자동매매하는 개인용 봇.
 사용자 PC에서 돌고, 텔레그램으로 알림/원격제어한다.
 
@@ -100,6 +106,13 @@ notify.py            텔레그램 / tg_assistant.py AI 비서 / dashboard.py 웹
 toss/                API 클라이언트 (client.py REST / stream.py 웹소켓 / auth.py 토큰)
 strategy/            전략 구현 / backtest/ 엔진+몬테카를로 / research/ 전략 연구 기록
 ```
+
+## 커뮤니티
+
+- 🗺️ **로드맵**: [Discussion #11](https://github.com/cssddd3/trading_bot/discussions/11) — 그래프 조립형 프레임워크로 진화 중
+- 💡 **전략 아이디어·질문**: [Discussions](https://github.com/cssddd3/trading_bot/discussions) — 기각된 전략도 근거와 함께 공개
+- 🐛 **버그·제안**: [Issues](https://github.com/cssddd3/trading_bot/issues) — 템플릿 참고
+- 🤝 **기여**: [CONTRIBUTING.md](CONTRIBUTING.md) — 특히 새 전략은 검증 게이트 통과가 유일한 심사 기준
 
 ## 라이선스
 

@@ -2,6 +2,12 @@
 
 **🇰🇷 [한국어](README.md)** · 🇺🇸 English
 
+![Python](https://img.shields.io/badge/python-3.11+-3776AB?logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-macOS%20·%20Linux%20·%20Windows-lightgrey)
+[![Roadmap](https://img.shields.io/badge/roadmap-Discussions-blueviolet?logo=github)](https://github.com/cssddd3/trading_bot/discussions/11)
+[![Issues](https://img.shields.io/github/issues/cssddd3/trading_bot?logo=github)](https://github.com/cssddd3/trading_bot/issues)
+
 A personal bot that auto-trades Korean (KR) and US stocks with small capital via the
 Toss Securities Open API. Runs on your own PC; notifications and remote control via Telegram.
 
@@ -102,6 +108,13 @@ toss/                API clients (client.py REST / stream.py websocket / auth.py
 strategy/            strategy implementations / backtest/ engine + Monte Carlo
 research/            strategy research records (all rejections documented)
 ```
+
+## Community
+
+- 🗺️ **Roadmap**: [Discussion #11](https://github.com/cssddd3/trading_bot/discussions/11) — evolving into a graph-based bot-builder framework
+- 💡 **Strategy ideas & questions**: [Discussions](https://github.com/cssddd3/trading_bot/discussions) — rejected strategies are documented with evidence
+- 🐛 **Bugs & suggestions**: [Issues](https://github.com/cssddd3/trading_bot/issues)
+- 🤝 **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md) — the validation gate is the only review standard for strategies
 
 ## License
 
