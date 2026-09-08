@@ -57,6 +57,16 @@ def build_context(dr) -> str:
                          f"({live / p['avg_price'] - 1:+.2%}) 스탑 {p.get('stop_price') or '없음'}")
     else:
         parts.append("보유 포지션: 없음")
+    for s, pend in (dr.pf.pending or {}).items():
+        src = "전환 스캐너(60일 평균 거래대금 상위 200 일일 스캔)" if pend.get("frac") else "기본 전략(st)"
+        parts.append(f"매수/매도 예약(pending): {s} {dr._names.get(s, '')} {pend.get('action')} "
+                     f"다음 시가 — 신호: {pend.get('reason')} ({pend.get('date')} 종가 확정, 출처: {src})")
+    sc = _tail_csv(config.LOG_DIR / config.SCANNER["shadow_csv"], 8)
+    if sc:
+        parts.append("전환 스캐너 최근 포착 (날짜,코드,종목명,신호가 — 여기 있으면 스캐너가 찾은 것):\n"
+                     + "\n".join(sc))
+    parts.append("참고: 모든 매수 신호는 가격 기술 규칙(Supertrend 상승 전환 등)이며 "
+                 "뉴스·호재 기반이 아니다. 뉴스는 매수 차단(거부권)에만 쓰인다.")
     if dr.live and dr.broker:
         try:
             parts.append(f"매수가능금액 {dr.broker.buying_power():,.0f}원 "
