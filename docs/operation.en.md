@@ -17,8 +17,12 @@
 | (free text) | Any non-"/" message goes to the read-only AI assistant. It remembers recent conversation — follow-ups like "why did you buy that one earlier?" work |
 
 Automatic alerts: buy/sell fills, blocked-buy reasons, bad-news warnings, new corporate
-filings (📢), scanner signals (🔍), hourly heartbeat (if it stops, the bot is down —
-check the machine), end-of-day report, crashes.
+filings (📢), AI stock recommendations (🔭 news/market based — watch-only; buys come only
+from validated price rules), scanner signals (🔍), drawdown briefing (📉), hourly heartbeat
+(if it stops, the bot is down — check the machine), end-of-day report, crashes.
+
+The end-of-day report includes a **7-day AI recommendation scorecard** — how each pick
+has moved since it was recommended, graded automatically every day.
 
 ## Web dashboard (read-only)
 

@@ -552,8 +552,51 @@ class DryRun:
             msg = f"🔭 [{label}/{market}] {mkt.get('market_note', '')}\n" + "\n".join(lines)
             notify.send(msg)
             notify.broadcast(msg + "\n\n(자동매매 봇의 관심종목 — 투자 판단·책임은 각자에게)")
+            self._log_scout_picks([picks[s] for s in new if s in picks])
         elif label == "스카우트":            # 장전 첫 실행은 '선정 없음'도 알림
             notify.send(f"🔭 [스카우트/{market}] {mkt.get('market_note', '')}\n(선정 종목 없음)")
+
+    def _log_scout_picks(self, picks: list[dict]) -> None:
+        """AI 추천을 추천 시점 가격과 함께 기록 — 1주 성적표(마감 리포트)의 원장."""
+        path = config.LOG_DIR / "scout_picks.csv"
+        try:
+            new_file = not path.exists()
+            with path.open("a", newline="") as f:
+                w = csv.writer(f)
+                if new_file:
+                    w.writerow(["date", "symbol", "name", "price", "thesis"])
+                for p in picks:
+                    px = self.last_price(p["symbol"]) or ""
+                    w.writerow([now_kst().date().isoformat(), p["symbol"], p["name"],
+                                f"{px:.4f}" if px else "", p.get("thesis", "")])
+        except OSError as e:
+            print(f"  [!] 추천 기록 실패: {e}")
+
+    def _scout_scorecard(self, days: int = 7) -> list[str]:
+        """최근 N일 AI 추천의 추천 시점 대비 등락 — 잘 맞았는지 스스로 채점한다."""
+        path = config.LOG_DIR / "scout_picks.csv"
+        if not path.exists():
+            return []
+        cutoff = (now_kst().date() - timedelta(days=days)).isoformat()
+        first: dict[str, dict] = {}          # 심볼당 창 안 최초 추천 기준
+        with path.open() as f:
+            for r in csv.DictReader(f):
+                if r["date"] >= cutoff and r["symbol"] not in first and r.get("price"):
+                    first[r["symbol"]] = r
+        rows = []
+        for s, r in first.items():
+            live = self.last_price(s)
+            if not live:
+                continue
+            rows.append((live / float(r["price"]) - 1, r))
+        if not rows:
+            return []
+        rows.sort(key=lambda t: -t[0])
+        lines = [f"🔭 AI 추천 최근 {days}일 성적 (추천 시점 대비, 감시만 했고 매수는 별개):"]
+        for pct, r in rows:
+            lines.append(f"{'🔺' if pct >= 0 else '🔻'} {r['name']} ({r['symbol']}) "
+                         f"{pct:+.1%} — {r['date'][5:]} 추천")
+        return lines
 
     def _maybe_scout(self, market: str) -> None:
         """장전(PRE)에 그 시장의 오늘자 워치리스트가 없으면 한 번 생성."""
@@ -1503,6 +1546,13 @@ class DryRun:
             lines.append("오늘 전환 신호 없음 (감시 "
                          f"{len(self.symbols)}종목 + 스캐너 상위 200 스캔 완료) — "
                          "신호가 없으면 사지 않는 것이 검증된 규칙입니다. 현금도 포지션.")
+        score = self._scout_scorecard()
+        if score:
+            lines.append("")
+            lines += score
+        note = self._market_note()
+        if note:
+            lines.append(f"🌍 시황 메모(AI): {note}")
         lines.append(self.guard.summary())
         lines.append("궁금한 점은 자유롭게 질문하세요 (예: 내일 뭐 살 거야?)")
         report = "\n".join(lines)

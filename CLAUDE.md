@@ -47,6 +47,8 @@ toss/client.py의 place_order를 직접 호출하지 말 것.
 - `logs/strategy_validation.json` 검증 게이트 기록 — passed=true 없으면 --live 기동 거부
 - `logs/dashboard_live.json`(+_dryrun) 대시보드 스냅샷 / `logs/scanner_shadow.csv` 스캐너 기록
 - `logs/tg_history.json` 비서 대화 기억 (10문답/8천자)
+- `logs/scout_picks.csv` AI 추천 원장 (date,symbol,name,price,thesis — _log_scout_picks가
+  신규 픽만 기록, 마감 리포트의 7일 성적표 _scout_scorecard 근거. 9-08 도입 — 이후부터 축적)
 
 안전장치 체인 (매수 1건): 후보 규칙필터 → LLM 선정(감시 추가만) → 전략 가격 시그널
 → RiskGuard(예산/일일손실/횟수/쿨다운/경고종목) → LLM 뉴스 거부권 → 주문 → 즉시 손절 등록.
