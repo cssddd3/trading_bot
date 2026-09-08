@@ -685,6 +685,41 @@ class DryRun:
                     f"매매(전략+안전장치)는 계속되지만 LLM 감시망이 꺼졌습니다.\n"
                     f"충전: console.anthropic.com → Plans & Billing")
 
+    def _drawdown_alert(self) -> None:
+        """보유 평가손익이 하루 기준선 대비 크게 악화되면 묻기 전에 먼저 브리핑한다.
+
+        (사용자 피드백: 폭락날 "지금 어떻게 되고 있어?"를 물어야만 알 수 있었음)"""
+        if not self.pf.positions:
+            return
+        from risk import risk_day
+        day = risk_day()
+        unreal = invested = 0.0
+        for s_, p in self.pf.positions.items():
+            live = self.last_price(s_) or p["avg_price"]
+            unreal += self.to_krw(s_, (live - p["avg_price"]) * p["quantity"])
+            invested += self.to_krw(s_, p["avg_price"] * p["quantity"])
+        if getattr(self, "_dd_day", "") != day:
+            self._dd_day, self._dd_base = day, unreal
+            return
+        drop = self._dd_base - unreal
+        threshold = max(invested * 0.03, 10_000)
+        if drop >= threshold and self.pf.done_today.get("crashalert") != day:
+            self.pf.done_today["crashalert"] = day
+            worst = sorted(self.pf.positions,
+                           key=lambda s_: (self.last_price(s_) or 0)
+                           / self.pf.positions[s_]["avg_price"])[:3]
+            det = []
+            for s_ in worst:
+                p = self.pf.positions[s_]
+                live = self.last_price(s_) or p["avg_price"]
+                stop = p.get("stop_price")
+                dist = f", 손절선까지 {live / stop - 1:+.1%}" if stop else ""
+                det.append(f"· {s_} {self._names.get(s_, '')} "
+                           f"{live / p['avg_price'] - 1:+.1%}{dist}")
+            notify.send(f"📉 [{self.tag}] 급락 브리핑 — 오늘 평가손익 {drop:,.0f}원 악화 "
+                        f"(현재 {unreal:+,.0f}원)\n" + "\n".join(det)
+                        + "\n손절선 도달 시 자동 매도됩니다. 즉시 정리는 /flat")
+
     def _shadow_scan(self) -> None:
         """전환 스캐너: KR 15:20+ 1회 — '60일 평균 거래대금 상위 top_n'에서 오늘 전환 탐지.
 
@@ -1217,6 +1252,12 @@ class DryRun:
             elif cmd == "/resume":
                 self.pf.halted = False
                 notify.send(f"▶️ [{self.tag}] 매수 재개")
+            elif cmd == "/restart":
+                # 새 코드 반영용 자기 재시작 — 터미널 없이 폰에서 원터치
+                notify.send(f"🔄 [{self.tag}] 재시작합니다 (새 코드 반영)...")
+                self.pf.save()
+                import os as _os
+                _os.execv(sys.executable, [sys.executable] + sys.argv)
             elif cmd == "/flat":
                 self.pf.halted = True
                 if not self.pf.positions:
@@ -1423,6 +1464,7 @@ class DryRun:
         if self.stream:                        # 감시 종목 + 보유 종목 실시간 구독
             self.stream.set_symbols(set(self.symbols) | set(self.pf.positions))
         self._refresh_prices()                 # 틱당 1콜 배치 시세 (개별 REST 대체)
+        self._drawdown_alert()                 # 급락 시 선제 브리핑 (하루 1회)
         self._write_dashboard()
         for m, (sess, _info) in sessions.items():
             if sess == "PRE":
@@ -1473,11 +1515,25 @@ class DryRun:
         lines = [f"📋 [{self.tag} 마감] {today}",
                  f"시그널 {len(sigs)}건 · 체결 {len(trades)}건 · 실현손익 {pnl:+,.0f}원",
                  asset_line]
+        unreal = 0.0
         for sym, p in self.pf.positions.items():
             lines.append("보유: " + self._position_line(sym, p))
-        if not self.pf.positions:
+            live = self.last_price(sym) or p["avg_price"]
+            unreal += self.to_krw(sym, (live - p["avg_price"]) * p["quantity"])
+        if self.pf.positions:
+            lines.append(f"평가손익 합계 {unreal:+,.0f}원")
+        else:
             lines.append("보유 포지션 없음")
+        for sym, pd in self.pf.pending.items():
+            lines.append(f"📅 내일 시가 {pd['action']} 예약: {sym} "
+                         f"{self._names.get(sym, '')} — {pd['reason']}")
+        if not trades and not self.pf.pending:
+            # "오늘 왜 아무것도 안 했나"를 묻기 전에 봇이 먼저 설명한다
+            lines.append("오늘 전환 신호 없음 (감시 "
+                         f"{len(self.symbols)}종목 + 스캐너 상위 200 스캔 완료) — "
+                         "신호가 없으면 사지 않는 것이 검증된 규칙입니다. 현금도 포지션.")
         lines.append(self.guard.summary())
+        lines.append("궁금한 점은 자유롭게 질문하세요 (예: 내일 뭐 살 거야?)")
         report = "\n".join(lines)
         print(report)
         notify.send(report)

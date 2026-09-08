@@ -137,7 +137,11 @@ look-ahead 방지). LLM에 과거 종목명·날짜를 주면 백테스트 오�
 - **시세**: toss/stream.py 웹소켓(declarative full-replace 구독, LOSSY, 계정당 2연결,
   100구독/연결). last_price() 우선순위: 스트림(10초 신선도) → 틱 배치 맵(_refresh_prices,
   틱당 1콜·90초 신선도, 9-02 검수 효율 수리 — 이전엔 틱당 25~30콜) → 개별 REST
-- **텔레그램**: /stop /resume /flat /status /budget /watch /unwatch + 자유질문(비서, 대화 기억).
+- **텔레그램**: /stop /resume /flat /restart /status /budget /watch /unwatch + 자유질문(비서, 대화 기억).
+  /restart는 save 후 os.execv 자기재실행 (새 코드 반영 — 사용자 UX 개선 3종 중 하나, 9-08:
+  ① 마감 리포트가 무거래 사유·내일 예약·평가손익 합계를 선제 설명, ② /restart 원터치,
+  ③ _drawdown_alert 급락 브리핑 — 당일 평가손익이 기준선 대비 max(투자금 3%, 1만원) 악화 시
+  하루 1회 워스트 3종목+손절선 거리 통지).
   chat_id 게이트. 공유 채널 notify.broadcast() — 발신 전용, 계좌 수치 제외
 - **대시보드**: dashboard.py 러너 내장 스레드 :8787, 읽기 전용, 스냅샷 파일만 서빙.
   포트 점유 시 60초마다 재시도 (좀비 프로세스 실사고)

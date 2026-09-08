@@ -10,6 +10,7 @@
 | `/stop` | Pause new buys (existing positions keep being managed) |
 | `/resume` | Resume buying |
 | `/flat` | Liquidate everything (kill switch) |
+| `/restart` | Restart the bot (picks up new code) — one tap, no terminal needed |
 | `/budget KR 100000` | Change the KR budget (persisted; same for US) |
 | `/watch 005930` | Manually add a symbol to the watchlist |
 | `/unwatch 005930` | Remove a manual watch |
