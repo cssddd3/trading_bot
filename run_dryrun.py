@@ -1680,9 +1680,15 @@ class DryRun:
         else:
             px = f"@ {p['avg_price']:,.0f} → {live:,.0f}"
             stop = f"{p['stop_price']:,.0f}" if p.get("stop_price") else "-"
-        # 초기 포지션(9-08 이전 매수)은 사유 미기록 — 전부 st/스캐너 전환 진입이었음
-        why = p.get("entry_reason") or "Supertrend 상승 전환"
-        src = p.get("entry_src") or "전략 st"
+        # 사유 미기록 포지션의 실제 출처 (9-09 확인): 8/26 이전 = 기각된 vb가 산 유산,
+        # 8/27~9/7 = st/스캐너. 유산 포지션은 '단타성 진입이 장기 관리 중'임을 명시한다
+        why = p.get("entry_reason")
+        src = p.get("entry_src")
+        if not why:
+            if p.get("entry_date", "") <= "2026-08-26":
+                src, why = "⚠️ 기각된 초기 전략 vb", "급등 추격 매수 (단타성 진입 — 현재 st 규칙으로 관리 중)"
+            else:
+                src, why = "전략 st", "Supertrend 상승 전환"
         return (f"{'🔺' if r >= 0 else '🔻'} {self._names.get(s, s)} ({s})  {r:+.1%}\n"
                 f"   {p['quantity']:g}주 {px} · 손절 {stop}\n"
                 f"   {p.get('entry_date', '?')} 진입 · {src} — {why}")
