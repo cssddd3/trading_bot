@@ -1329,6 +1329,29 @@ class DryRun:
             elif cmd == "/resume":
                 self.pf.halted = False
                 notify.send(f"▶️ [{self.tag}] 매수 재개")
+            elif cmd.startswith("/sell"):
+                # 종목 지정 매도 — 사용자 결정의 집행 도구 (앱에서 직접 팔면 장부 불일치
+                # 로 halted 되는 것을 막는 정식 경로). 봇 장부에 있는 종목만.
+                parts_ = cmd.split()
+                sym = parts_[1].upper() if len(parts_) > 1 else ""
+                if sym not in self.pf.positions:
+                    notify.send(f"⚠️ {sym or '(종목 미지정)'} — 봇 장부에 없는 종목입니다. "
+                                f"보유: {', '.join(self.pf.positions) or '없음'}\n"
+                                f"사용법: /sell 003350")
+                else:
+                    live_px = self.last_price(sym)
+                    try:
+                        sess, _ = self.market_session(config.market_of(sym))
+                    except Exception:       # noqa: BLE001
+                        sess = "CLOSED"
+                    if sess == "OPEN" and live_px:
+                        self.virtual_sell(sym, live_px, "사용자 지시 (/sell)")
+                    else:
+                        self.pf.pending[sym] = {"action": "SELL",
+                                                "reason": "사용자 지시 (/sell)",
+                                                "date": "1970-01-01"}
+                        notify.send(f"📅 {sym} {self._names.get(sym, '')} — 장이 닫혀 있어 "
+                                    f"다음 시가 매도 예약했습니다")
             elif cmd == "/restart":
                 # 새 코드 반영용 자기 재시작 — 터미널 없이 폰에서 원터치
                 notify.send(f"🔄 [{self.tag}] 재시작합니다 (새 코드 반영)...")
@@ -1639,9 +1662,51 @@ class DryRun:
                 last_snap = time.time()
                 self._write_dashboard()
 
+    def _legacy_audit(self) -> None:
+        """전략 승계 심사 — 다른(기각된) 전략이 산 포지션을 현 전략 기준으로 1회 판정.
+
+        9-09 실사고: 8/27 vb→st 교체 때 침묵 승계 → '단타 진입이 장타 관리' 부정합을
+        아무도 심사하지 않음. 이제 기동 시마다 미심사 유산 포지션을 현 전략 관점으로
+        판정해 보고한다. 하락 추세면 어차피 on_close가 매도하므로 여기선 진단+보고
+        (매도 자체는 기존 검증된 규칙 경로로만). 심사 결과는 장부에 남겨 반복 방지."""
+        lines = []
+        for sym, p in self.pf.positions.items():
+            src = p.get("entry_src", "")
+            legacy = (not src and p.get("entry_date", "") <= "2026-08-26") \
+                or ("vb" in src and "심사" not in src)
+            if not legacy:
+                continue
+            verdict = "판정 불가 (봉 부족)"
+            try:
+                bars, _ = self.bars_with_today(sym)
+                strat = build(self.key, **self.params)
+                strat.prepare(bars)
+                d = getattr(strat, "dir", None)
+                if d and d[-1] is not None:
+                    verdict = ("현 전략 기준 상승 추세 → 밴드 관리로 승계 유지"
+                               if d[-1] == 1 else
+                               "현 전략 기준 하락 추세 → 다음 종가 판정에서 매도 대상")
+            except Exception as e:          # noqa: BLE001
+                verdict = f"판정 실패({type(e).__name__})"
+            p["entry_src"] = "기각 전략 vb (승계 심사 완료)"
+            p.setdefault("entry_reason", "급등 추격 매수 (단타성 진입)")
+            live = self.last_price(sym) or p["avg_price"]
+            lines.append(f"· {sym} {self._names.get(sym, '')} "
+                         f"({live / p['avg_price'] - 1:+.1%}) — {verdict}")
+        if lines:
+            self.pf.save()
+            notify.send("🔎 [전략 승계 심사] 기각된 구전략(vb)이 산 포지션 판정:\n"
+                        + "\n".join(lines)
+                        + "\n\n승계 유지 = 추세 규칙으로 관리 중이라는 뜻이며, 진입 자체가"
+                        " 검증된 자리였다는 뜻은 아닙니다. 즉시 정리를 원하면 /sell 종목코드")
+
     def watch(self, interval: int) -> None:
         print(f"{self.tag} 감시 시작 (간격 {interval}초, 시장 {'/'.join(config.MARKETS)}, "
               f"Ctrl+C 로 종료)")
+        try:
+            self._legacy_audit()            # 전략 승계 심사 (해당 포지션 있을 때만 발화)
+        except Exception as e:              # noqa: BLE001
+            print(f"  [!] 승계 심사 실패(무시): {e}")
         print(f"텔레그램 알림: {'켜짐' if notify.enabled() else '꺼짐 (notify.py 참고)'}")
         reported = None   # 국장 마감 리포트를 보낸 날짜
         try:

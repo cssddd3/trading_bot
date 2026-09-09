@@ -10,6 +10,7 @@
 | `/stop` | Pause new buys (existing positions keep being managed) |
 | `/resume` | Resume buying |
 | `/flat` | Liquidate everything (kill switch) |
+| `/sell 003350` | Sell one holding (market open: now / closed: queued for next open). Bot-ledger positions only |
 | `/restart` | Restart the bot (picks up new code) — one tap, no terminal needed |
 | `/budget KR 100000` | Change the KR budget (persisted; same for US) |
 | `/watch 005930` | Manually add a symbol to the watchlist |
