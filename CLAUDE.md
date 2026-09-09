@@ -133,6 +133,13 @@ look-ahead 방지). LLM에 과거 종목명·날짜를 주면 백테스트 오�
 
 ## 4. 서브시스템 메모
 
+- **공유 두뇌** (brain.py, 9-09 "LLM과 알고리즘이 한 사람처럼" 사용자 지시): 모든 LLM 역할이
+  같은 운용 일지(logs/brain_journal.json, 60건/15k자 롤링)를 읽고 쓴다.
+  사이클: 아침 스카우트가 일지를 읽음(ask_claude에 digest 주입) → 매매가 일지 기록
+  (virtual_buy/sell) → 매수 근거가 뉴스 거부권에 전달(news.check context=) → 비서도 같은
+  일지를 읽음 → 마감 후 _evening_review가 하루 평가+가설을 일지에 남김(🧠 텔레그램).
+  가설은 logs/hypotheses.md 적재 — **게이트 통과 전 실전 반영 금지** (대원칙 1·2 불변:
+  일지는 기억일 뿐 매수 방아쇠 아님). brain.ask()는 공용 텍스트 LLM 헬퍼 (open-fail)
 - **LLM 티어링** (config.LLM_MODELS): 스카우트=sonnet-5(15분 스로틀), 뉴스필터/비서=haiku-4-5.
   effort 파라미터는 haiku에서 400 에러 → config.output_config_for()가 처리.
   스로틀 없인 랭킹 순환으로 하루 150회+ 호출 실측됨

@@ -24,6 +24,13 @@ from validated price rules), scanner signals (🔍), drawdown briefing (📉), h
 The end-of-day report includes a **7-day AI recommendation scorecard** — how each pick
 has moved since it was recommended, graded automatically every day.
 
+After the close, a **🧠 evening review** arrives — the AI grades today's trading (or
+non-trading), checks whether each position's entry thesis still holds, and proposes
+backtestable hypotheses. Reviews accumulate in a shared operating journal that the
+morning scout reads the next day — the AI roles (scout, news veto, assistant, review)
+share one memory and act like a single person. Hypotheses still must pass the
+backtest gate before touching real money (the AI still cannot pull the buy trigger).
+
 ## Web dashboard (read-only)
 
 Runs automatically while the bot is up — holdings, P&L, pending orders, watchlist, and

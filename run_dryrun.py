@@ -30,6 +30,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import brain
 import config
 import notify
 from backtest.engine import round_to_tick
@@ -1097,9 +1098,9 @@ class DryRun:
         if ok and self.pf.halted:
             ok, why = False, "킬 스위치(/stop) 상태 — 매수 중지 중 (/resume 으로 해제)"
 
-        # 마지막 관문: LLM 뉴스 필터 (악재 뉴스 거부권)
+        # 마지막 관문: LLM 뉴스 필터 (악재 뉴스 거부권) — 매수 근거를 함께 전달 (공유 두뇌)
         if ok and self.news:
-            verdict = self.news.check(symbol, name=self._names.get(symbol))
+            verdict = self.news.check(symbol, name=self._names.get(symbol), context=reason)
             if verdict and verdict.blocks_buy:
                 ok, why = False, f"뉴스 필터 — {verdict.reason()}"
 
@@ -1171,6 +1172,8 @@ class DryRun:
         stop_note = (f"\n거래소측 손절 @{self.pf.positions[symbol].get('stop_price') or '-'}"
                      if self.live else "")
         print(f"  [{self.tag} 매수] {symbol} {qty:g}주 @ {px_disp}{unit} — {reason}")
+        brain.journal_append("매매", f"매수 {symbol} {self._names.get(symbol, '')} "
+                             f"{qty:g}주 @{px_disp}{unit} — {reason}")
         notify.broadcast(f"🟢 매수: {symbol} {self._names.get(symbol, '')} @ {px_disp}"
                          f"{'$' if market == 'US' else '원'} — {reason}")
         notify.send(f"🟢 [{self.tag}] 매수\n{symbol} {self._names.get(symbol, '')} "
@@ -1253,6 +1256,10 @@ class DryRun:
         px_disp = f"{price:,.2f}" if market == "US" else f"{price:,.0f}"
         print(f"  [{self.tag} 매도] {symbol} {qty:g}주 @ {px_disp}{unit} "
               f"(손익 {pnl_krw:+,.0f}원, {rate:+.2%}) — {reason}")
+        brain.journal_append("매매", f"매도 {symbol} {self._names.get(symbol, '')} "
+                             f"@{px_disp}{unit} 손익 {pnl_krw:+,.0f}원({rate:+.1%}) — {reason}. "
+                             f"진입근거: {pos.get('entry_reason', '기록 없음')} "
+                             f"({pos.get('entry_date', '?')})")
         emoji = "🔴" if pnl_krw < 0 else "🔵"
         notify.broadcast(f"{emoji} 매도: {symbol} {self._names.get(symbol, '')} "
                          f"@ {px_disp}{'$' if market == 'US' else '원'} ({rate:+.2%}) — {reason}")
@@ -1585,6 +1592,39 @@ class DryRun:
         notify.send(report)
         return report
 
+    def _evening_review(self, report: str) -> None:
+        """마감 후 하루 1회 — LLM이 오늘을 리뷰하고 일지에 남긴다 (공유 두뇌의 저녁 루틴).
+
+        역할 경계: 리뷰는 기억과 가설 생성만. 가설은 logs/hypotheses.md 에 쌓이고
+        백테스트 게이트를 통과해야 실전 반영 (대원칙 2). 실패해도 매매 무관 (open-fail)."""
+        try:
+            memo = brain.digest(max_chars=1800)
+            positions = "\n".join(
+                self._position_line(s, p) for s, p in self.pf.positions.items()) or "없음"
+            prompt = (f"[오늘 마감 리포트]\n{report}\n\n[보유 상세]\n{positions}\n\n"
+                      f"[최근 운용 일지]\n{memo or '(없음)'}\n\n"
+                      "오늘 하루를 리뷰하라:\n"
+                      "1) 오늘 매매/무매매 판단 한 줄 평가\n"
+                      "2) 보유 종목별 진입 논지가 아직 유효한지 (가격 규칙과 별개의 관찰)\n"
+                      "3) 내일 주목할 것\n"
+                      "4) 백테스트해볼 가치가 있는 가설 0~2개 — 반드시 '진입/청산/손절을 숫자로'"
+                      " 적을 수 있는 형태만. 없으면 '없음'.\n"
+                      "간결하게, 텔레그램 메시지 분량으로.")
+            system = ("너는 자동매매 봇의 수석 애널리스트다. 매매 지시는 절대 하지 않는다 — "
+                      "관찰, 논지 점검, 검증 가능한 가설 제안만 한다. 한국어로 간결하게.")
+            text = brain.ask(prompt, system, role="scout", effort="medium")
+            if not text:
+                return
+            brain.journal_append("리뷰", text[:1200])
+            notify.send(f"🧠 [저녁 리뷰]\n{text[:3500]}")
+            # '가설:' 류 줄은 검증 대기열에도 적재
+            for ln in text.splitlines():
+                ls = ln.strip("-· ").strip()
+                if ls.startswith("가설") and "없음" not in ls[:10]:
+                    brain.add_hypothesis(ls)
+        except Exception as e:              # noqa: BLE001
+            print(f"  [!] 저녁 리뷰 실패(무시): {e}")
+
     def _idle_wait(self, seconds: float) -> None:
         """긴 대기 중에도 30초마다 텔레그램 명령/질문을 확인한다 (밤에도 응답 가능)."""
         deadline = time.time() + seconds
@@ -1612,7 +1652,8 @@ class DryRun:
                     today = now_kst().date().isoformat()
                     if reported != today:
                         print("국장 종료 — 일일 리포트 발송.")
-                        self.daily_report()
+                        report = self.daily_report()
+                        self._evening_review(report)
                         reported = today
                 statuses = set(sessions.values())
                 if statuses & {"OPEN", "CLOSING_AUCTION"}:

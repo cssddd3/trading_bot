@@ -171,8 +171,14 @@ def ask_claude(candidates: list[dict], market: str = "KR") -> dict | None:
             f"[{c['symbol']}] {c['name']} ({c['market']}) — {px}, "
             f"전일대비 {c['change_rate']:+.2%}\n{hl}")
 
-    prompt = (f"오늘 날짜: {datetime.now(KST):%Y-%m-%d (%a)} | 시장: {market}\n"
-              f"후보 {len(candidates)}개 (거래대금 상위 → 규칙 필터 통과):\n\n"
+    # 공유 두뇌: 어제까지의 운용 일지를 읽고 이어서 판단한다 (기억의 연속성)
+    import brain
+    memo = brain.digest(max_chars=1800)
+    memo_block = (f"\n\n[운용 일지 — 최근 매매·리뷰·보유 논지. 이 맥락을 이어서 판단하라]\n"
+                  f"{memo}\n" if memo else "")
+    prompt = (f"오늘 날짜: {datetime.now(KST):%Y-%m-%d (%a)} | 시장: {market}"
+              + memo_block
+              + f"\n후보 {len(candidates)}개 (거래대금 상위 → 규칙 필터 통과):\n\n"
               + "\n\n".join(blocks)
               + f"\n\n이 중 최대 {S['max_picks']}개를 골라라.")
 

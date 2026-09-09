@@ -101,6 +101,7 @@ run_backtest.py      백테스트 + --validate 검증 게이트
 broker.py            실주문 유일 통로 (LiveBroker + 거래소측 스탑)
 risk.py              RiskGuard 한도 검사
 scout.py             LLM 종목 스카우트 / llm_filter.py 뉴스 거부권
+brain.py             공유 두뇌 — LLM 역할들이 함께 쓰는 운용 일지·저녁 리뷰·가설 큐
 news.py              헤드라인 수집 / dart.py 전자공시 모니터
 notify.py            텔레그램 / tg_assistant.py AI 비서 / dashboard.py 웹 대시보드
 toss/                API 클라이언트 (client.py REST / stream.py 웹소켓 / auth.py 토큰)

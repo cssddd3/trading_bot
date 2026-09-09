@@ -151,7 +151,8 @@ class NewsFilter:
         return Verdict(**d)
 
     # ── LLM 호출 ────────────────────────────────────────────
-    def _ask_claude(self, symbol: str, name: str, headlines) -> Verdict | None:
+    def _ask_claude(self, symbol: str, name: str, headlines,
+                    context: str | None = None) -> Verdict | None:
         import anthropic
 
         if self._client is None:
@@ -160,7 +161,8 @@ class NewsFilter:
         lines = "\n".join(
             f"- [{h.published[:16]}] {h.title}" + (f" ({h.source})" if h.source else "")
             for h in headlines)
-        prompt = (f"종목: {name}({symbol})\n최근 48시간 헤드라인 {len(headlines)}건:\n"
+        ctx = f"\n[봇의 매수 근거] {context}\n" if context else ""
+        prompt = (f"종목: {name}({symbol}){ctx}\n최근 48시간 헤드라인 {len(headlines)}건:\n"
                   f"{lines}\n\n이 종목의 오늘 매수를 뉴스 리스크 관점에서 평가하라.")
         try:
             resp = self._client.messages.create(
@@ -208,7 +210,7 @@ class NewsFilter:
         return hashlib.sha1("|".join(h.title for h in headlines).encode()).hexdigest()[:16]
 
     def check(self, symbol: str, name: str | None = None,
-              refresh: bool = False) -> Verdict | None:
+              refresh: bool = False, context: str | None = None) -> Verdict | None:
         """refresh=True면 캐시가 있어도 헤드라인이 바뀌었을 때 재평가한다.
         (LLM 호출은 새 뉴스가 있을 때만 — 같은 헤드라인이면 캐시 반환)"""
         ok, why = self.available()
@@ -228,7 +230,7 @@ class NewsFilter:
         h = self._hash(headlines)
         if cached and cached.headlines_hash == h:
             return cached                        # 새 뉴스 없음 → LLM 호출 생략
-        verdict = self._ask_claude(symbol, name, headlines)
+        verdict = self._ask_claude(symbol, name, headlines, context=context)
         if verdict:
             verdict.headlines_hash = h
             self._cache[symbol] = asdict(verdict)

@@ -85,6 +85,11 @@ def build_context(dr) -> str:
         except (json.JSONDecodeError, KeyError):
             pass
 
+    import brain
+    memo = brain.digest(max_chars=1500)
+    if memo:
+        parts.append("운용 일지(공유 두뇌 — 매매 기록·저녁 리뷰·논지):\n" + memo)
+
     sig = _tail_csv(dr.signals_path)
     if sig:
         parts.append("최근 시그널 로그(헤더+최근):\n" + "\n".join(sig))
