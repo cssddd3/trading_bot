@@ -72,6 +72,8 @@ All were tested on real data with survivorship-bias-free universes, and the data
 | Filing pullback (buy the dip after supply-contract news) | -1.62%/trade, 8% win rate | The dip after the pop is the start of the full retracement |
 | Scanner on same-day trading-value universe | -4.5%/trade | Same-day top volume = yesterday's pump filter |
 | st on inverse ETFs (short substitute) | 0 OOS entries / IS -2.6%/trade | Inverse ETFs decay structurally |
+| Fixed profit targets | net-negative in a 42-futures replication | amputates the right tail that funds trend systems |
+| LLM making trade decisions | edge vanishes under contamination-free eval | fake alpha from the model remembering ticker history |
 
 Full data and reproduction code live in `research/`.
 
