@@ -828,10 +828,17 @@ class DryRun:
                 flips.append((sym, name, closes[-1]))
                 with open(config.LOG_DIR / config.SCANNER["shadow_csv"], "a") as f:
                     f.write(f"{today},{sym},{name},{closes[-1]:.0f}\n")
-            queued = []
+            queued, too_pricey = [], []
             if flips and config.SCANNER["auto_buy"]:
                 for sym, name, close in flips[: config.SCANNER["max_daily_picks"]]:
                     if sym in self.pf.positions or sym in self.pf.pending:
+                        continue
+                    # 1주 총비용이 분할 예산 상한을 넘으면 예약해도 수량 0 → 하루 종일
+                    # 불발 스팸 (9-09 HD현대 실사고). 예약 전에 거르고 이유를 알린다
+                    cap = self.budget_total("KR") * config.SCANNER["position_frac"]
+                    need = close * (1 + config.SLIPPAGE_RATE) * (1 + config.FEE_RATE)
+                    if need > cap:
+                        too_pricey.append(f"· {sym} {name} 1주 {need:,.0f}원 > 상한 {cap:,.0f}원")
                         continue
                     self._names[sym] = name
                     self.guard.limits.allow_symbols.setdefault(sym, name)
@@ -848,10 +855,15 @@ class DryRun:
                        f"뉴스 거부권·한도 검사 후 체결)\n" + "\n".join(queued))
                 notify.send(msg)
                 notify.broadcast(msg)
-            elif flips:
+            elif flips and not too_pricey:
                 lines = [f"· {s} {n} (종가 {c:,.0f})" for s, n, c in flips]
                 notify.send("🔍 [전환 스캐너] 오늘 상승 전환 감지 (예약 없음 — 보유/중복)\n"
                             + "\n".join(lines))
+            if too_pricey:
+                notify.send("🔍 [전환 스캐너] 신호는 있었지만 예산 대비 고가라 제외:\n"
+                            + "\n".join(too_pricey)
+                            + f"\n(분할 매수 검증 전제상 1건 ≤ 예산의 "
+                            f"{config.SCANNER['position_frac']:.0%} — /budget 증액 시 매수 가능)")
             print(f"  [스캐너] 전환 {len(flips)}건, 예약 {len(queued)}건")
             self.pf.done_today["scanner"] = today   # 성공했을 때만 완료 처리 (9/2 수리)
         except Exception as e:              # noqa: BLE001 - 스캐너 장애는 매매 무관
@@ -1028,17 +1040,30 @@ class DryRun:
         held_value_krw = self.to_krw(symbol, pos_now.get("quantity", 0) * price)
         exposure_krw = self.exposure_krw()
 
-        # 여력 부족은 '왜'가 중요 — 예수금 부족(입금 필요)인지 예산 소진(청산 대기)인지 구분
+        # 여력 부족은 '왜'가 중요 — 어떤 상한에 걸렸는지 정확히 말한다 (9-09 HD현대 실사고:
+        # "예수금 부족, 입금하면 가능"이라 안내했지만 실제 원인은 분할 상한/현금버퍼였음)
         if (market == "KR" and qty <= 0) or (market == "US" and amount_usd < 2):
             power, remaining = self._budget_parts(market)
-            # KR: 1주 가격 / US: 최소 주문 $2 (소수점 매수라 1주 전체가 필요하지 않음)
-            need = self.to_krw(symbol, price) if market == "KR" else 2 * self.fx()
-            if power < remaining:
-                why = (f"{market} 예수금 부족 — 계좌 가용 {power:,.0f}원 < 필요 {need:,.0f}원. "
-                       f"(예산 잔여는 {remaining:,.0f}원 — 입금하면 살 수 있음)")
+            # KR: 1주 총비용(슬리피지·수수료 포함 — price에 슬리피지는 이미 반영) / US: 최소 $2
+            need = self.to_krw(symbol, price * (1 + fee_rate)) if market == "KR" \
+                else 2 * self.fx()
+            permanent_today = False
+            if max_frac and need > self.budget_total(market) * max_frac:
+                # 1주 값이 분할 예산 상한 초과 — 오늘 안에 바뀌지 않는 구조적 사유.
+                # 분할 상한(승격 전제)을 늘려서 사는 것은 금지 → 예약 자체를 접는다
+                why = (f"1주 비용 {need:,.0f}원 > 분할 예산 상한 "
+                       f"{self.budget_total(market) * max_frac:,.0f}원 (예산의 {max_frac:.0%}). "
+                       f"분할 매수가 검증 전제라 상한을 늘릴 수 없음 — 예약 취소. "
+                       f"/budget 증액 시 다음 신호부터 매수 가능")
+                permanent_today = True
+            elif budget_krw < need <= remaining * config.POSITION_PCT:
+                why = (f"{market} 예수금 부족 — 실가용 {budget_krw:,.0f}원"
+                       f"(예수금 {power:,.0f}원 중 현금버퍼 5% 제외 후 예산 상한 적용) "
+                       f"< 필요 {need:,.0f}원 (수수료 포함). 입금하면 살 수 있음")
             else:
-                why = (f"{market} 예산 소진 — 잔여 {remaining:,.0f}원 < 필요 {need:,.0f}원. "
-                       f"(보유 종목이 예산 점유 중 — 청산되면 재개, /budget으로 증액 가능)")
+                why = (f"{market} 예산 여력 부족 — 이번 매수 가능액 {budget_krw:,.0f}원 "
+                       f"(예산 잔여 {remaining:,.0f}원 × 현금버퍼 95%) < 필요 {need:,.0f}원. "
+                       f"(보유 종목이 예산 점유 중 — 청산되면 재개, /budget 증액 가능)")
             log_signal({"time": now_kst().isoformat(timespec="seconds"), "symbol": symbol,
                         "strategy": self.key, "action": "BUY",
                         "price": f"{price:.2f}" if market == "US" else f"{price:.0f}",
@@ -1046,7 +1071,7 @@ class DryRun:
                        self.signals_path)
             print(f"  [매수 거부] {symbol} {why}")
             self._notify_reject(symbol, why)
-            return "transient"
+            return "permanent" if permanent_today else "transient"
 
         warnings = []
         stock_info = None

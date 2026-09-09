@@ -44,6 +44,9 @@ Every day from 15:20 KST it scans the **top 200 by 60-day average trading value*
 - **Position sizing of ≤50% of the market budget per trade is the promotion condition**
   (full-size allocation fails the gate at 31% loss probability) — do not remove
   `position_frac` in `config.SCANNER`
+- Consequently, **stocks whose single share costs more than 50% of the budget are skipped**
+  even when they signal (you get a notification). Raising the cap would violate the
+  validated premise — increase `/budget` instead
 - **Bottom-zone filter**: flips occurring below 70% of the 250-day high are excluded —
   in both test periods these "dead-cat bounce" entries lost consistently
   (-3.7%/-4.8% per trade, 14–20% win rate)
