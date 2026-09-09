@@ -1,0 +1,258 @@
+{
+ "baseline": {
+  "is": {
+   "n": 568,
+   "expectancy_pct": 0.4507105040037588,
+   "win_rate": 0.25704225352112675,
+   "total_pct": 256.003566274135,
+   "top5pct_retention": 8.399841597268567,
+   "best": 484.34102964649526,
+   "worst": -26.80305101819108
+  },
+  "oos": {
+   "n": 340,
+   "expectancy_pct": 3.6777442565480065,
+   "win_rate": 0.2911764705882353,
+   "total_pct": 1250.4330472263223,
+   "top5pct_retention": 1.29624880170926,
+   "best": 231.7133944316691,
+   "worst": -26.15414572294903
+  },
+  "gate": {
+   "oos_trades_ge_30": true,
+   "oos_expectancy_pos": true,
+   "mc_loss_lt_30": true
+  },
+  "passed": true,
+  "mc": {
+   "prob_loss": 0.023666666666666666,
+   "ret_p5": 0.8726444593689713,
+   "ret_p50": 45.674321171160344,
+   "mdd_p95": -0.8576123665368082
+  }
+ },
+ "ratchet_cap1.25": {
+  "is": {
+   "n": 568,
+   "expectancy_pct": -0.839891300465698,
+   "win_rate": 0.29225352112676056,
+   "total_pct": -477.05825866451653,
+   "top5pct_retention": -2.7711640411977414,
+   "best": 98.4828661789441,
+   "worst": -26.80305101819108
+  },
+  "oos": {
+   "n": 340,
+   "expectancy_pct": 0.5215642350230181,
+   "win_rate": 0.29411764705882354,
+   "total_pct": 177.33183990782612,
+   "top5pct_retention": 5.52098724556249,
+   "best": 127.76613894656133,
+   "worst": -26.15414572294903
+  },
+  "gate": {
+   "oos_trades_ge_30": true,
+   "oos_expectancy_pos": true,
+   "mc_loss_lt_30": false
+  },
+  "passed": false,
+  "mc": {
+   "prob_loss": 0.5583333333333333,
+   "ret_p5": -0.9176077169541744,
+   "ret_p50": -0.19964504822507667,
+   "mdd_p95": -0.9579977339215022
+  }
+ },
+ "ratchet_cap1.5": {
+  "is": {
+   "n": 568,
+   "expectancy_pct": -0.8218697773707413,
+   "win_rate": 0.28169014084507044,
+   "total_pct": -466.82203354658105,
+   "top5pct_retention": -2.9838985862248473,
+   "best": 94.19913008855798,
+   "worst": -26.80305101819108
+  },
+  "oos": {
+   "n": 340,
+   "expectancy_pct": 1.6285942930156352,
+   "win_rate": 0.28823529411764703,
+   "total_pct": 553.722059625316,
+   "top5pct_retention": 1.911176974819136,
+   "best": 120.73461770789633,
+   "worst": -26.15414572294903
+  },
+  "gate": {
+   "oos_trades_ge_30": true,
+   "oos_expectancy_pos": true,
+   "mc_loss_lt_30": true
+  },
+  "passed": true,
+  "mc": {
+   "prob_loss": 0.179,
+   "ret_p5": -0.6758535661484775,
+   "ret_p50": 2.9226910416510425,
+   "mdd_p95": -0.903443676884515
+  }
+ },
+ "ratchet_cap2.0": {
+  "is": {
+   "n": 568,
+   "expectancy_pct": -0.7571263422017317,
+   "win_rate": 0.28169014084507044,
+   "total_pct": -430.0477623705836,
+   "top5pct_retention": -3.3911190393878616,
+   "best": 97.0172712114821,
+   "worst": -26.80305101819108
+  },
+  "oos": {
+   "n": 340,
+   "expectancy_pct": 2.4355224912210067,
+   "win_rate": 0.2852941176470588,
+   "total_pct": 828.0776470151422,
+   "top5pct_retention": 1.4950112069311845,
+   "best": 134.59700086265354,
+   "worst": -26.15414572294903
+  },
+  "gate": {
+   "oos_trades_ge_30": true,
+   "oos_expectancy_pos": true,
+   "mc_loss_lt_30": true
+  },
+  "passed": true,
+  "mc": {
+   "prob_loss": 0.07133333333333333,
+   "ret_p5": -0.27019274323064313,
+   "ret_p50": 10.582600298250147,
+   "mdd_p95": -0.8782209449401603
+  }
+ },
+ "timestop_15d_1.0atr": {
+  "is": {
+   "n": 568,
+   "expectancy_pct": -0.27989243305999156,
+   "win_rate": 0.2852112676056338,
+   "total_pct": -158.9789019780752,
+   "top5pct_retention": -10.471048440938151,
+   "best": 151.40917974051743,
+   "worst": -26.80305101819108
+  },
+  "oos": {
+   "n": 340,
+   "expectancy_pct": 3.6066370410288227,
+   "win_rate": 0.31176470588235294,
+   "total_pct": 1226.2565939497997,
+   "top5pct_retention": 1.3218051972824978,
+   "best": 231.7133944316691,
+   "worst": -26.15414572294903
+  },
+  "gate": {
+   "oos_trades_ge_30": true,
+   "oos_expectancy_pos": true,
+   "mc_loss_lt_30": true
+  },
+  "passed": true,
+  "mc": {
+   "prob_loss": 0.026333333333333334,
+   "ret_p5": 0.8633659033752936,
+   "ret_p50": 42.50579044877733,
+   "mdd_p95": -0.8505840338805338
+  }
+ },
+ "timestop_15d_0.5atr": {
+  "is": {
+   "n": 568,
+   "expectancy_pct": -0.24268167837981164,
+   "win_rate": 0.2605633802816901,
+   "total_pct": -137.84319331973302,
+   "top5pct_retention": -12.309408615448781,
+   "best": 151.40917974051743,
+   "worst": -26.80305101819108
+  },
+  "oos": {
+   "n": 340,
+   "expectancy_pct": 3.688920478434693,
+   "win_rate": 0.3,
+   "total_pct": 1254.2329626677956,
+   "top5pct_retention": 1.2923215920247613,
+   "best": 231.7133944316691,
+   "worst": -26.15414572294903
+  },
+  "gate": {
+   "oos_trades_ge_30": true,
+   "oos_expectancy_pos": true,
+   "mc_loss_lt_30": true
+  },
+  "passed": true,
+  "mc": {
+   "prob_loss": 0.021666666666666667,
+   "ret_p5": 0.9862022171260463,
+   "ret_p50": 49.01597607426546,
+   "mdd_p95": -0.8468526962031652
+  }
+ },
+ "timestop_20d_1.0atr": {
+  "is": {
+   "n": 568,
+   "expectancy_pct": -0.49282736100822605,
+   "win_rate": 0.2711267605633803,
+   "total_pct": -279.9259410526724,
+   "top5pct_retention": -6.032413181068006,
+   "best": 151.40917974051743,
+   "worst": -26.80305101819108
+  },
+  "oos": {
+   "n": 340,
+   "expectancy_pct": 3.6975555822175266,
+   "win_rate": 0.29411764705882354,
+   "total_pct": 1257.168897953959,
+   "top5pct_retention": 1.289303562729516,
+   "best": 231.7133944316691,
+   "worst": -26.15414572294903
+  },
+  "gate": {
+   "oos_trades_ge_30": true,
+   "oos_expectancy_pos": true,
+   "mc_loss_lt_30": true
+  },
+  "passed": true,
+  "mc": {
+   "prob_loss": 0.021,
+   "ret_p5": 0.9662162152475884,
+   "ret_p50": 48.6693260779297,
+   "mdd_p95": -0.852475731084349
+  }
+ },
+ "volsize": {
+  "is": {
+   "n": 568,
+   "expectancy_pct": 0.4507105040037588,
+   "win_rate": 0.25704225352112675,
+   "total_pct": 256.003566274135,
+   "top5pct_retention": 8.399841597268567,
+   "best": 484.34102964649526,
+   "worst": -26.80305101819108
+  },
+  "oos": {
+   "n": 340,
+   "expectancy_pct": 2.7797101963683235,
+   "win_rate": 0.2911764705882353,
+   "total_pct": 945.10146676523,
+   "top5pct_retention": 1.2452158413305203,
+   "best": 231.7133944316691,
+   "worst": -21.350469037398113
+  },
+  "gate": {
+   "oos_trades_ge_30": true,
+   "oos_expectancy_pos": true,
+   "mc_loss_lt_30": true
+  },
+  "passed": true,
+  "mc": {
+   "prob_loss": 0.009,
+   "ret_p5": 1.7304721961545502,
+   "ret_p50": 28.012821565956013,
+   "mdd_p95": -0.6774136074680224
+  }
+ }
+}

@@ -37,7 +37,7 @@ from backtest.engine import round_to_tick
 from llm_filter import NewsFilter
 from risk import RiskGuard
 from scout import load_watchlist, run_scout
-from strategy import Action, Fill, Position, build
+from strategy import Action, Fill, Position, Signal, build
 from toss.client import TossClient
 from toss.data import load_bars, bars_from_candles, merge, save_csv, cache_path
 
@@ -1031,6 +1031,10 @@ class DryRun:
                          self.budget_total(market) * config.MAX_POSITION_BUDGET_PCT[market])
         if max_frac:                         # 스캐너 매수: 분할 상한 (승격 조건)
             budget_krw = min(budget_krw, self.budget_total(market) * max_frac)
+        high_vol = self._is_high_vol_regime(market)
+        if high_vol:                         # 9-09 채택: 고변동성 체제엔 신규 진입 절반 사이즈
+            budget_krw *= config.VOL_REGIME["size_mult"]
+            reason += " (고변동성 체제 — 절반 사이즈)"
         amount_usd = 0.0
         if market == "US":
             amount_usd = budget_krw / self.fx() / (1 + fee_rate)
@@ -1152,11 +1156,21 @@ class DryRun:
         if not self.live:
             fee = price * qty * fee_rate
             self.pf.cash -= self.to_krw(symbol, price * qty + fee)
+        entry_atr = None
+        try:
+            from strategy import indicators as ta
+            bars_e, _ = self.bars_with_today(symbol)
+            atr_n = config.STRATEGY_PARAMS.get(self.key, {}).get("atr_n", 10)
+            series = ta.atr(bars_e, atr_n)
+            entry_atr = series[-1] if series else None
+        except Exception:                       # noqa: BLE001 - 타임스탑용 참고값, 실패해도 매수 무관
+            pass
         self.pf.positions[symbol] = {
             "quantity": qty, "avg_price": price,
             "entry_date": now_kst().date().isoformat(),
             "entry_reason": reason.removeprefix("시가 체결: "),
             "entry_src": "전환 스캐너" if max_frac else f"전략 {self.key}",
+            "entry_atr": entry_atr,
             "highest_close": price, "stop_price": None}
         if not self.live:
             self.guard.record_order()           # 실전은 broker가 이미 기록
@@ -1453,6 +1467,30 @@ class DryRun:
             if pos.is_open and symbol in self.pf.positions:
                 self.pf.positions[symbol]["highest_close"] = pos.highest_close
                 self.pf.positions[symbol]["stop_price"] = pos.stop_price
+            # 타임스탑 (9-09 채택, config.TIME_STOP): 밴드 매도 신호가 없을 때만 —
+            # 추세 이탈 매도가 항상 우선. 진입 후 N거래일 지나도록 진입ATR의 배수만큼도
+            # 못 오르면 청산 (research/trial_2026-09-09.py OOS 재검증: 기대값·MC 거의
+            # 불변 + 14% 포지션 조기청산 = 자금 회전. vb 유산 포지션처럼 '단타 진입이
+            # 장기 표류'하는 패턴의 구조적 해법)
+            if (config.TIME_STOP["enabled"] and pos.is_open
+                    and (not sig or sig.action == Action.HOLD)):
+                p = self.pf.positions.get(symbol, {})
+                entry_atr = p.get("entry_atr")
+                entry_date = p.get("entry_date", "")
+                if entry_atr and entry_date:
+                    dates = [b.date for b in bars]
+                    try:
+                        entry_idx = dates.index(entry_date) if entry_date in dates \
+                            else next(k for k, d in enumerate(dates) if d > entry_date)
+                    except StopIteration:
+                        entry_idx = None
+                    if entry_idx is not None and i - entry_idx >= config.TIME_STOP["days"]:
+                        gain = bars[i].close - p["avg_price"]
+                        if gain < config.TIME_STOP["atr_mult"] * entry_atr:
+                            sig = Signal(Action.SELL,
+                                        f"타임스탑 {config.TIME_STOP['days']}거래일 "
+                                        f"미이익 (진입ATR×{config.TIME_STOP['atr_mult']} 미만)",
+                                        fill=Fill.NEXT_OPEN)
             if sig and sig.action != Action.HOLD:
                 price_now = live or bars[-1].close
                 if sig.fill == Fill.THIS_CLOSE:
@@ -1534,6 +1572,10 @@ class DryRun:
             self.stream.set_symbols(set(self.symbols) | set(self.pf.positions))
         self._refresh_prices()                 # 틱당 1콜 배치 시세 (개별 REST 대체)
         self._drawdown_alert()                 # 급락 시 선제 브리핑 (하루 1회)
+        try:
+            self._refresh_vol_regime()         # 변동성 체제 갱신 (하루 1회, 9-09 채택)
+        except Exception as e:                  # noqa: BLE001
+            print(f"  [!] 변동성체제 갱신 예외(무시): {e}")
         self._write_dashboard()
         for m, (sess, _info) in sessions.items():
             if sess == "PRE":
@@ -1661,6 +1703,66 @@ class DryRun:
             if time.time() - last_snap >= 60:   # 휴장 중에도 대시보드는 살아있게
                 last_snap = time.time()
                 self._write_dashboard()
+
+    def _refresh_vol_regime(self) -> None:
+        """지수 실현변동성 체제 갱신 — 하루 1회(9-09 채택, config.VOL_REGIME).
+
+        open-fail: 실패해도 self._high_vol을 건드리지 않는다 (직전 판정 유지, 매매 안 막음)."""
+        if not config.VOL_REGIME["enabled"]:
+            return
+        cfg = config.VOL_REGIME
+        last = getattr(self, "_vol_regime_ts", 0.0)
+        if time.time() - last < cfg["refresh_hours"] * 3600:
+            return
+        self._vol_regime_ts = time.time()
+        result = getattr(self, "_high_vol", {})
+        for market, sym in cfg["index_symbol"].items():
+            try:
+                bars = []
+                before = None
+                need = cfg["percentile_window"] + cfg["lookback_days"] + 20
+                for _ in range(6):
+                    r = self.client.get_candles(sym, interval="1d", count=200, before=before)
+                    bars += r.get("candles", [])
+                    before = r.get("nextBefore")
+                    if not before or len(bars) >= need:
+                        break
+                bars = sorted(bars, key=lambda b: b["timestamp"])
+                closes = [float(b["closePrice"]) for b in bars]
+                if len(closes) < cfg["lookback_days"] + 60:
+                    continue
+                import math
+                rets = [math.log(closes[k] / closes[k - 1]) for k in range(1, len(closes))
+                        if closes[k - 1] > 0]
+                lb = cfg["lookback_days"]
+                vol_now = None
+                if len(rets) >= lb:
+                    seg = rets[-lb:]
+                    mean = sum(seg) / len(seg)
+                    var = sum((x - mean) ** 2 for x in seg) / len(seg)
+                    vol_now = (var ** 0.5) * (252 ** 0.5)
+                vols = []
+                for k in range(lb, len(rets) + 1):
+                    seg = rets[k - lb:k]
+                    mean = sum(seg) / len(seg)
+                    var = sum((x - mean) ** 2 for x in seg) / len(seg)
+                    vols.append((var ** 0.5) * (252 ** 0.5))
+                window = vols[-cfg["percentile_window"]:]
+                if vol_now is None or len(window) < 60:
+                    continue
+                window_sorted = sorted(window)
+                thresh = window_sorted[int(cfg["percentile"] * len(window_sorted))]
+                result[market] = vol_now > thresh
+                print(f"  [변동성체제] {market}({sym}) 20일변동성 {vol_now:.1%} "
+                      f"(임계 {thresh:.1%}) → {'고변동성' if result[market] else '평상'}")
+            except Exception as e:           # noqa: BLE001
+                print(f"  [!] 변동성체제 갱신 실패({market}): {e}")
+        self._high_vol = result
+
+    def _is_high_vol_regime(self, market: str) -> bool:
+        if not config.VOL_REGIME["enabled"]:
+            return False
+        return getattr(self, "_high_vol", {}).get(market, False)
 
     def _legacy_audit(self) -> None:
         """전략 승계 심사 — 다른(기각된) 전략이 산 포지션을 현 전략 기준으로 1회 판정.

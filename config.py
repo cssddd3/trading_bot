@@ -106,6 +106,30 @@ RISK = RiskLimits()
 RISK_FROM_BUDGET = True
 DAILY_LOSS_PCT = 0.10
 
+# 2026-09-09 리서치 트라이얼 채택분 (research/trial_2026-09-09.py, 이슈 #14/#15).
+# 4년 스캐너 유니버스(200종목) OOS 340건 재검증 — 베이스라인 대비:
+#   타임스탑: 기대값·MC 거의 동일(+3.61% vs +3.68%, 손실확률 2.6% vs 2.4%) + 14% 포지션
+#     조기청산(자금 회전) → 채택. ATR래칫(이슈 #13)은 전 구간에서 기대값·MC 악화로 기각
+#     (문헌 경고(Davey 567k백테스트) 재확인 — 기각 원장에 등재).
+TIME_STOP: dict = {
+    "enabled": True,
+    "days": 15,          # 진입 후 이 거래일 지나도록
+    "atr_mult": 1.0,     # 진입시 ATR의 이 배수만큼도 못 오르면
+}                         # → 익일 시가 청산 (밴드손절보다 우선순위 낮음 — 밴드가 이미 팔면 무관)
+
+#   변동성체제 사이징: OOS 기대값은 다소 감소하나(+3.68→+2.78%) MC손실확률 2.4%→0.9%,
+#     MDD최악5% -85.8%→-67.7%로 크게 개선 (Moreira&Muir JF2017 근거). 사이징만 — 스킵 없음
+#     → OOS 30건 하한 불변. 진입 판단이 아니라 크기만 줄이므로 st/스캐너 모두에 적용.
+VOL_REGIME: dict = {
+    "enabled": True,
+    "index_symbol": {"KR": "069500", "US": "SPY"},   # KODEX200 / SPY
+    "lookback_days": 20,       # 실현변동성 계산 구간
+    "percentile_window": 500,  # 상대 임계치를 매기는 과거 구간 (거래일)
+    "percentile": 0.80,        # 이 분위 초과 = 고변동성 체제
+    "size_mult": 0.5,          # 고변동성 시 신규 진입 사이즈 배수 (절대 1.0 초과 금지)
+    "refresh_hours": 20,       # 지수 캔들 갱신 주기 (하루 1회면 충분)
+}
+
 
 def effective_budget(market: str) -> int:
     """실효 초기예산: 텔레그램 /budget 설정(장부 저장) > .env > 기본값.

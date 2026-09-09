@@ -23,6 +23,23 @@ python3 run_backtest.py -t st --validate # writes the gate record required for l
 
 ## Live strategies
 
+### Risk overlays (added 9-09, validated)
+
+Two safety layers apply on top of every entry, adjusting size and timing only — the
+underlying strategy is unchanged:
+
+- **Volatility-regime sizing**: when 20-day realized volatility of KOSPI (KODEX200) /
+  S&P 500 (SPY) is in the top 20% of the trailing 500 trading days, new entries get half
+  size. Sizing, not skipping — trade frequency is unaffected, only risk is. Result:
+  Monte-Carlo loss probability 2.4%→0.9%, worst-5% drawdown -85.8%→-67.7%
+- **Time stop**: if a position hasn't gained at least 1x its entry-time ATR after 15
+  trading days, it's closed at the next open. A band-break stop always takes priority.
+  The structural fix for "a short-term-style entry drifting with no context"
+
+Rejected alternative: an **ATR stop ratchet** (tightening the stop only as new highs
+form) was tested at four cap settings — all made both expectancy and Monte-Carlo results
+worse, concentrating returns onto a single big winner instead of protecting give-back.
+
 ### st — Supertrend trend following (default)
 
 - Buys the day a stock's trend is **confirmed to have flipped from down to up** (daily
