@@ -61,9 +61,12 @@ toss/client.py의 place_order를 직접 호출하지 말 것.
 - **자동 치환(sed/replace) 패치 금지에 가깝게 신중히.** 2026-09-01: str.replace 앵커 불일치가
   조용히 no-op → DART·스캐너 훅이 tick에 연결 안 된 채 "켜짐" 로그만 찍힘. 반드시 Edit 도구
   (불일치 시 실패) 사용 + 연결 후 **호출 검증 테스트** (tick을 세션 위장으로 돌려 훅 호출 확인)
-- **테스트가 프로덕션을 오염시킨 사고 2회**: mock 테스트가 live_signals.csv에 가짜 행 기록 /
-  가드 테스트가 실계좌에 진짜 조건주문 등록. → 테스트는 dryrun 상태 파일만, 끝나면 삭제.
-  대시보드 스냅샷도 모드별 분리(dashboard_live vs _dryrun)가 그 재발 방지책
+- **테스트가 프로덕션을 오염시킨 사고 3회**: mock 테스트가 live_signals.csv에 가짜 행 기록 /
+  가드 테스트가 실계좌에 진짜 조건주문 등록 / **9-10: 회귀테스트가 brain_journal.json(공유
+  일지, 당시 모드분리 없었음)에 "삼성전자 테스트" 매매를 실제 저녁 리뷰용 일지에 기록**.
+  → 테스트는 dryrun 상태 파일만, 끝나면 삭제. **새 상태 파일을 추가할 때마다 처음부터
+  live_/dryrun_ 접두사로 분리할 것** (사후에 추가하지 말고) — brain.py는 configure(live)로
+  DryRun.__init__에서 1회 확정
 - tick()의 sessions 값은 `(세션문자열, info)` **튜플**. watch()에선 문자열로 변환됨 — 혼동 주의
 - 조건주문 list는 `status="OPEN"` 파라미터 필수 — 누락 시 400→빈목록→중복 등록 (실계좌에
   스탑 6개 중복됐던 사고). _sync_exchange_stop이 '심볼당 정확히 1개' 보장
@@ -163,7 +166,8 @@ look-ahead 방지). LLM에 과거 종목명·날짜를 주면 백테스트 오�
 ## 4. 서브시스템 메모
 
 - **공유 두뇌** (brain.py, 9-09 "LLM과 알고리즘이 한 사람처럼" 사용자 지시): 모든 LLM 역할이
-  같은 운용 일지(logs/brain_journal.json, 60건/15k자 롤링)를 읽고 쓴다.
+  같은 운용 일지(logs/{live,dryrun}_brain_journal.json — 9-10 모드분리, 60건/15k자 롤링)를
+  읽고 쓴다.
   사이클: 아침 스카우트가 일지를 읽음(ask_claude에 digest 주입) → 매매가 일지 기록
   (virtual_buy/sell) → 매수 근거가 뉴스 거부권에 전달(news.check context=) → 비서도 같은
   일지를 읽음 → 마감 후 _evening_review가 하루 평가+가설을 일지에 남김(🧠 텔레그램).

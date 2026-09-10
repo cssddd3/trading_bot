@@ -14,10 +14,20 @@ from datetime import datetime, timedelta, timezone
 import config
 
 KST = timezone(timedelta(hours=9))
-JOURNAL_PATH = config.LOG_DIR / "brain_journal.json"
+# 실전/드라이런 분리 (9-10 실사고: 회귀테스트가 실전 일지를 오염시킴 — dashboard_live vs
+# _dryrun과 같은 재발방지책. configure(live)가 DryRun.__init__에서 모드 확정 시 호출된다.
+# 기본값은 dryrun쪽 — 테스트가 configure()를 안 불러도 실전 파일을 못 건드리게)
+JOURNAL_PATH = config.LOG_DIR / "dryrun_brain_journal.json"
 HYPOTHESES_PATH = config.LOG_DIR / "hypotheses.md"
 MAX_ENTRIES = 60
 MAX_CHARS = 15_000
+
+
+def configure(live: bool) -> None:
+    """러너 기동 시 1회 호출 — 실전/드라이런 일지 파일을 분리한다."""
+    global JOURNAL_PATH
+    prefix = "live" if live else "dryrun"
+    JOURNAL_PATH = config.LOG_DIR / f"{prefix}_brain_journal.json"
 
 
 def journal_append(kind: str, text: str) -> None:

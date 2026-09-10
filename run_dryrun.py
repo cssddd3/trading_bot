@@ -173,6 +173,7 @@ class DryRun:
         self.live = live
         self.tag = "실전" if live else "드라이런"
         self.state_path, self.signals_path, self.trades_path = paths_for(live)
+        brain.configure(live)      # 실전/드라이런 운용 일지 분리 (9-10: 테스트 오염 재발방지)
         if live:
             # 감사 C3/H: 실전 생성은 main() 경유만 허용 — TT_LIVE_INTENT는 main()이
             # 게이트 통과 후 직접 세우는 내부 플래그라 .env로는 절대 세워지지 않는다.
