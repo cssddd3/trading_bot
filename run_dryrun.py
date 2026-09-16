@@ -645,10 +645,15 @@ class DryRun:
         if not rows:
             return []
         rows.sort(key=lambda t: -t[0])
-        lines = [f"🔭 AI 추천 최근 {days}일 성적 (추천 시점 대비, 감시만 했고 매수는 별개):"]
+        win = sum(1 for pct, _ in rows if pct > 0)
+        lines = [f"🔭 AI 추천 최근 {days}일 성적 (추천 시점 대비, 감시만 했고 매수는 별개): "
+                 f"상승 {win}/{len(rows)}"]
         for pct, r in rows:
             lines.append(f"{'🔺' if pct >= 0 else '🔻'} {r['name']} ({r['symbol']}) "
                          f"{pct:+.1%} — {r['date'][5:]} 추천")
+        if win / len(rows) < 0.4:
+            lines.append("⚠️ 최근 하락 비중이 높습니다 — 대부분 '당일 급등' 종목 추천이라"
+                         " 구조적으로 되돌림 위험이 큽니다 (9-17 프롬프트 보정 반영, 관찰 지속 중)")
         return lines
 
     def _maybe_scout(self, market: str) -> None:
