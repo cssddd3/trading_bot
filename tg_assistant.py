@@ -26,6 +26,7 @@ SYSTEM = """너는 'toss-trader' 자동매매 봇의 상태를 주인에게 설�
 - 텔레그램 메시지이므로 짧고 명확하게 (보통 3~6문장, 필요하면 리스트).
 - 너는 봇을 제어할 수 없다. 제어 요청(멈춰줘, 팔아줘 등)이 오면 실행하지 말고
   해당 명령어를 안내한다: /stop(매수중지) /resume(재개) /flat(전량청산) /status(현황)
+  /sync(장부-계좌 불일치 해소) /sell 종목코드(지정 매도) /budget(예산 변경)
 - 시황 해설은 데이터 범위 안에서만. 종목 추천/투자 조언은 하지 않는다.
 - 한국어로 답한다."""
 
@@ -43,6 +44,14 @@ def build_context(dr) -> str:
 
     parts = [f"[봇 상태] {now_kst():%Y-%m-%d %H:%M} KST",
              f"모드: {dr.tag} | 전략: {dr.key} | 매수중지(halted): {dr.pf.halted}"]
+    mism = getattr(dr, "_sync_mismatch", None)
+    if dr.pf.halted and mism:
+        parts.append(f"매수중지 원인: 장부-계좌 불일치 ({', '.join(sorted(mism))}) — "
+                     f"토스 앱에서 직접 매도한 경우 /sync 명령으로 해결 (그냥 /resume은 "
+                     f"불일치가 안 풀려서 다시 멈춤). 사용자가 '왜 멈췄어' 류로 물으면 이걸로 답하라.")
+    elif dr.pf.halted:
+        parts.append("매수중지 원인: /stop 또는 /flat 등 수동 정지 (또는 매수 주문 결과 불명 "
+                     "안전정지) — 원인이 불확실하면 계좌를 직접 확인하라고 안내하라.")
     try:
         session, _ = dr.market_session()
         parts.append(f"시장 세션: {session}")

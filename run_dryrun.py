@@ -224,6 +224,7 @@ class DryRun:
         self._seen_date = ""
         self._last_scout_check = 0.0
         self._last_reconcile = 0.0
+        self._sync_mismatch: set[str] = set()   # 대사 불일치로 halt된 종목 (/sync 대상)
         self.dart = None
         try:
             from dart import DartMonitor
@@ -283,14 +284,19 @@ class DryRun:
             real_qty = held.get(sym, 0.0)
             if real_qty >= book_qty - 1e-6:
                 self._sync_exchange_stop(sym)   # 보유 정상 — 스탑을 '정확히 1개, 올바른 트리거'로
+                self._sync_mismatch.discard(sym)
                 continue
             had_stop = bool(self.pf.positions[sym].get("stop_order_id"))
             if not had_stop or sym in stop_syms:
-                # 스탑 발동으로 설명 안 되는 수량 감소 — 원인 불명 유출 → 안전 우선 정지
+                # 스탑 발동으로 설명 안 되는 수량 감소 — 원인 불명 유출 → 안전 우선 정지.
+                # 흔한 원인은 사용자가 토스 앱에서 직접 매도한 것 — 그럴 땐 /sync로 장부를
+                # 실제 잔고에 맞추면 된다 (9-17: /resume만으론 안 풀리던 매시간 재정지 수리)
                 self.pf.halted = True
+                self._sync_mismatch.add(sym)
                 notify.send(f"🚨 [실전] 장부-계좌 불일치: {sym} 장부 {book_qty:g}주 "
-                            f"vs 실보유 {real_qty:g}주 — 원인 불명. 매수 중지(/resume로 해제). "
-                            f"토스 앱에서 확인 필요")
+                            f"vs 실보유 {real_qty:g}주 — 원인 불명. 매수 중지. "
+                            f"직접 파신 거라면 /sync 로 장부를 맞추세요 (그냥 /resume 은 "
+                            f"다음 대사에서 다시 멈춥니다). 아니라면 토스 앱에서 확인 필요")
             else:
                 # 봇이 등록한 스탑이 사라짐 + 수량 감소 = 거래소측 손절 발동 → 장부 정리
                 live_px = self.last_price(sym) or self.pf.positions[sym]["avg_price"]
@@ -301,7 +307,52 @@ class DryRun:
                 self.pf.realized_pnl[config.market_of(sym)] += pnl_krw
                 self.guard.record_close(sym, pnl_krw, was_stop_loss=True)
                 del self.pf.positions[sym]
+                self._sync_mismatch.discard(sym)
         self.pf.save()
+
+    def _do_sync(self) -> list[str]:
+        """/sync — 원인불명 불일치 종목을 실제 잔고에 맞춰 장부를 강제 보정한다.
+
+        9-17 실사고: 사용자가 토스 앱에서 직접 매도 → 대사가 매시간 재정지 반복
+        (/resume은 근본 원인을 안 고쳐서 무의미). 실보유가 장부보다 적은 만큼 줄이거나
+        (매도로 간주, 손익은 현재가 기준 추정치 — 실제 체결가와 다를 수 있음) 0이면
+        포지션 삭제 + 봇 소유 스탑 정리. 실보유가 더 많은 쪽(사용자가 추가 매수)은
+        건드리지 않는다 — 기존 보유 불가침 원칙과 동일하게 보수적으로."""
+        if not (self.live and self.broker):
+            return ["드라이런 모드에는 /sync가 필요 없습니다"]
+        try:
+            holdings = self.client.get_holdings(self.broker.account_seq)
+            held = {i["symbol"]: float(i["quantity"]) for i in holdings.get("items", [])}
+        except Exception as e:               # noqa: BLE001
+            return [f"조회 실패({type(e).__name__}) — 다시 시도해주세요"]
+        lines = []
+        for sym in list(self._sync_mismatch):
+            p = self.pf.positions.get(sym)
+            if not p:
+                self._sync_mismatch.discard(sym)
+                continue
+            real_qty = held.get(sym, 0.0)
+            book_qty = p["quantity"]
+            if real_qty >= book_qty - 1e-6:
+                self._sync_mismatch.discard(sym)
+                continue
+            live_px = self.last_price(sym) or p["avg_price"]
+            self.broker.cancel_stops_for(sym)     # 실체 없는 물량에 남은 조건주문 정리
+            if real_qty <= 1e-9:
+                pnl_krw = self.to_krw(sym, (live_px - p["avg_price"]) * book_qty)
+                self.pf.realized_pnl[config.market_of(sym)] += pnl_krw
+                self.guard.record_close(sym, pnl_krw, was_stop_loss=False)
+                del self.pf.positions[sym]
+                brain.journal_append("사건", f"/sync: {sym} 장부 삭제 (실보유 0) — "
+                                     f"추정손익 {pnl_krw:+,.0f}원 (현재가 기준, 실제 매도가와 다를 수 있음)")
+                lines.append(f"· {sym} 전량 매도로 간주 — 장부 삭제, 추정손익 {pnl_krw:+,.0f}원")
+            else:
+                p["quantity"] = real_qty
+                brain.journal_append("사건", f"/sync: {sym} 수량 {book_qty:g}→{real_qty:g}주 보정")
+                lines.append(f"· {sym} 수량 보정: {book_qty:g}주 → {real_qty:g}주")
+            self._sync_mismatch.discard(sym)
+        self.pf.save()
+        return lines or ["불일치 없음 — 동기화할 것이 없습니다"]
 
     def _notify_reject(self, symbol: str, why: str) -> None:
         """거부 알림 — 같은 종목·같은 사유 계열은 하루 1회만 (transient 재시도 스팸 방지)."""
@@ -1342,8 +1393,23 @@ class DryRun:
                 self.pf.halted = True
                 notify.send(f"🛑 [{self.tag}] 신규 매수 중지. 보유분 손절/청산은 계속 동작. /resume 으로 재개")
             elif cmd == "/resume":
-                self.pf.halted = False
-                notify.send(f"▶️ [{self.tag}] 매수 재개")
+                # 9-17 수리: 장부-계좌 불일치가 남아있으면 재개해도 다음 대사(최대 1시간
+                # 내)에 다시 멈춘다 — 근본 원인을 안 고쳤기 때문. /sync로 먼저 안내
+                if self._sync_mismatch:
+                    notify.send("⚠️ 장부-계좌 불일치가 아직 남아있습니다: "
+                                + ", ".join(sorted(self._sync_mismatch))
+                                + "\n지금 재개해도 다음 대사(최대 1시간 내)에 다시 멈춥니다. "
+                                "토스 앱에서 직접 매도하신 거라면 /sync 로 장부를 맞춘 뒤 "
+                                "자동으로 재개됩니다.")
+                else:
+                    self.pf.halted = False
+                    notify.send(f"▶️ [{self.tag}] 매수 재개")
+            elif cmd == "/sync":
+                lines = self._do_sync()
+                if not self._sync_mismatch:
+                    self.pf.halted = False
+                    lines.append("▶️ 불일치 해소 — 매수 재개")
+                notify.send("🔄 [동기화]\n" + "\n".join(lines))
             elif cmd.startswith("/sell"):
                 # 종목 지정 매도 — 사용자 결정의 집행 도구 (앱에서 직접 팔면 장부 불일치
                 # 로 halted 되는 것을 막는 정식 경로). 봇 장부에 있는 종목만.
