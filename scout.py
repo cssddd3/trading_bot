@@ -64,6 +64,9 @@ SYSTEM = """너는 자동매매 봇의 종목 스카우트다. 제시된 후보 
 - **전일대비 등락률을 반드시 확인하고, 당일 이미 +8% 이상 오른 종목은 원칙적으로 감점.**
   선정하려면 "왜 지금부터도 남았는지"를 재료로 명시해야 한다 (단순히 "급등, 거래대금 실림"
   만으로는 근거 부족 — 그 자체가 경고 신호다)
+- 후보에는 두 종류 태그가 있다: **🔥오늘 거래대금 상위**(오늘 이미 크게 움직였을 위험,
+  위 규칙 적용) / **🐢안정유니버스**(평소에도 유동성 있지만 오늘 급등은 아님 — 신선한
+  재료가 있다면 오히려 이쪽을 우선 고려하라. '아직 안 움직였다'는 게 약점이 아니다)
 - 명확한 재료(실적/수주/신제품 등 사실 기반)가 있고, 아직 초기 반응 단계인 종목을 우선
 - 뉴스가 이미 다 반영된 급등 피로 종목, 테마성 급등락(정치·풍문)은 제외
 - 유동성이 낮거나 뉴스가 거의 없는 종목은 고르지 않는다
@@ -104,47 +107,101 @@ def quick_candidate_symbols(client: TossClient, market: str = "KR") -> set[str]:
     return {r["symbol"] for r in rows}
 
 
+def _quality_ok(sym: str, info: dict, client: TossClient) -> bool:
+    """레버리지/신규상장/거래정지/경고종목 공통 필터 (spike·steady 후보 공용)."""
+    if info.get("status") not in (None, "ACTIVE"):
+        return False
+    # 감사 H1: 레버리지/인버스 ETF 제외 (일변동 ±10%에 -3% 손절은 노이즈 안쪽)
+    name_all = (str(info.get("name", "")) + " " + str(info.get("englishName", ""))).upper()
+    if any(w in name_all for w in LEVERAGE_WORDS):
+        return False
+    # 신규상장 60일 미만 제외 (워밍업 봉 부족 + 변동성 비정상)
+    list_date = info.get("listDate") or ""
+    if list_date and (datetime.now(KST).date()
+                      - datetime.fromisoformat(list_date).date()).days < 60:
+        return False
+    kr = info.get("koreanMarketDetail") or {}
+    if kr.get("krxTradingSuspended") or kr.get("liquidationTrading"):
+        return False
+    try:
+        warns = {w.get("warningType") for w in client.get_warnings(sym)}
+    except Exception:                   # noqa: BLE001
+        warns = set()
+    if warns & {"LIQUIDATION_TRADING", "INVESTMENT_WARNING", "INVESTMENT_RISK", "OVERHEATED"}:
+        return False
+    return True
+
+
+def _steady_candidates(client: TossClient, exclude: set, n: int,
+                       infos: dict, price_cap: float | None) -> list[dict]:
+    """9-17: '오늘 급등' 랭킹이 아니라 스캐너가 이미 검증한 60일-평균 유니버스에서
+    후보를 뽑는다 (스카우트 추천 73% 하락 사후채점 — 원인은 '오늘 급등' 편향된 후보 풀).
+    조용한 순(당일 등락 작은 순)으로 골라 진짜 대안이 되게 한다."""
+    seed_path = config.DATA_DIR / "scanner" / "universe_seed.json"
+    try:
+        seed = json.loads(seed_path.read_text()).get("symbols", [])
+    except (OSError, ValueError):
+        return []
+    import random
+    rng = random.Random(datetime.now(KST).date().toordinal())   # 날짜별 고정 샘플
+    pool = [s for s in seed if s not in exclude]
+    rng.shuffle(pool)
+    pool = pool[: n * 4]                 # 후보군을 넉넉히 뽑아 필터링 후 n개로 압축
+    out = []
+    for sym in pool:
+        try:
+            r = client.get_candles(sym, interval="1d", count=2)
+            bars = sorted(r.get("candles", []), key=lambda b: b["timestamp"])
+            if len(bars) < 2:
+                continue
+            price = float(bars[-1]["closePrice"])
+            change = price / float(bars[-2]["closePrice"]) - 1
+        except Exception:                # noqa: BLE001
+            continue
+        if price_cap and price > price_cap:
+            continue
+        info = infos.get(sym)
+        if info is None:
+            try:
+                info = client.get_stocks([sym])[0]
+            except Exception:            # noqa: BLE001
+                continue
+        if not _quality_ok(sym, info, client):
+            continue
+        out.append({"symbol": sym, "name": info.get("name", sym), "last_price": price,
+                    "change_rate": change, "trading_amount": 0.0,
+                    "market": info.get("market", ""), "source": "steady"})
+        time.sleep(0.05)
+        if len(out) >= n:
+            break
+    return out
+
+
 def build_candidates(client: TossClient, market: str = "KR",
                      verbose: bool = True) -> list[dict]:
-    """규칙 기반 후보군: 거래대금 상위 → 가격/경고/상태 필터."""
+    """규칙 기반 후보군: 거래대금 상위(spike) + 60일평균 유니버스(steady) → 필터."""
     import os
     S = config.SCOUT
     rows = _fetch_rankings(client, market)
+    price_cap = None
     # KR: 1주 가격이 예산 이내인 것만 (미국은 금액 기반 소수점 매수가 가능해 가격 제한 불필요)
     if market == "KR":
         config.load_env()
-        cap = config.effective_budget("KR") if os.getenv("LIVE_TRADING") == "1" \
+        price_cap = config.effective_budget("KR") if os.getenv("LIVE_TRADING") == "1" \
             else config.RISK.max_order_amount
-        rows = [r for r in rows if float(r["price"]["lastPrice"]) <= cap]
+        rows = [r for r in rows if float(r["price"]["lastPrice"]) <= price_cap]
     symbols = [r["symbol"] for r in rows]
     if not symbols:
         return []
 
     infos = {i["symbol"]: i for i in client.get_stocks(symbols)}
+    steady_slots = S.get("steady_slots", 0) if market == "KR" else 0
+    spike_slots = max(1, S["max_candidates"] - steady_slots)
     out = []
     for r in rows:
         sym = r["symbol"]
         info = infos.get(sym, {})
-        if info.get("status") not in (None, "ACTIVE"):
-            continue
-        # 감사 H1: 레버리지/인버스 ETF 제외 (일변동 ±10%에 -3% 손절은 노이즈 안쪽)
-        name_all = (str(info.get("name", "")) + " " + str(info.get("englishName", ""))).upper()
-        if any(w in name_all for w in LEVERAGE_WORDS):
-            continue
-        # 신규상장 60일 미만 제외 (워밍업 봉 부족 + 변동성 비정상)
-        list_date = info.get("listDate") or ""
-        if list_date and (datetime.now(KST).date()
-                          - datetime.fromisoformat(list_date).date()).days < 60:
-            continue
-        kr = info.get("koreanMarketDetail") or {}
-        if kr.get("krxTradingSuspended") or kr.get("liquidationTrading"):
-            continue
-        try:
-            warns = {w.get("warningType") for w in client.get_warnings(sym)}
-        except Exception:               # noqa: BLE001
-            warns = set()
-        if warns & {"LIQUIDATION_TRADING", "INVESTMENT_WARNING", "INVESTMENT_RISK",
-                    "OVERHEATED"}:
+        if not _quality_ok(sym, info, client):
             continue
         out.append({
             "symbol": sym,
@@ -153,12 +210,18 @@ def build_candidates(client: TossClient, market: str = "KR",
             "change_rate": float(r["price"]["changeRate"]),
             "trading_amount": float(r["tradingAmount"]),
             "market": info.get("market", ""),
+            "source": "spike",
         })
         time.sleep(0.1)                  # warnings 호출 rate limit 여유
-        if len(out) >= config.SCOUT["max_candidates"]:
+        if len(out) >= spike_slots:
             break
+    if steady_slots:
+        out += _steady_candidates(client, exclude={c["symbol"] for c in out},
+                                  n=steady_slots, infos=infos, price_cap=price_cap)
     if verbose:
-        print(f"규칙 필터 통과 후보: {len(out)}개")
+        n_steady = sum(1 for c in out if c.get("source") == "steady")
+        print(f"규칙 필터 통과 후보: {len(out)}개 (오늘상위 {len(out)-n_steady} / "
+              f"안정유니버스 {n_steady})")
     return out
 
 
@@ -179,9 +242,10 @@ def ask_claude(candidates: list[dict], market: str = "KR") -> dict | None:
         else:
             px = f"현재가 {c['last_price']:,.0f}원, 거래대금 {c['trading_amount'] / 1e8:,.0f}억"
         warn = " ⚠️당일 급등(추격매수 위험)" if c["change_rate"] >= 0.08 else ""
+        tag = "🐢안정유니버스(오늘 급등 아님)" if c.get("source") == "steady" else "🔥오늘 거래대금 상위"
         blocks.append(
-            f"[{c['symbol']}] {c['name']} ({c['market']}) — 전일대비 {c['change_rate']:+.2%}"
-            f"{warn}, {px}\n{hl}")
+            f"[{c['symbol']}] {c['name']} ({c['market']}) {tag} — "
+            f"전일대비 {c['change_rate']:+.2%}{warn}, {px}\n{hl}")
 
     # 공유 두뇌: 어제까지의 운용 일지를 읽고 이어서 판단한다 (기억의 연속성)
     import brain
