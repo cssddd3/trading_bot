@@ -1475,6 +1475,23 @@ class DryRun:
 
         # 0) 예약된 시가 주문 체결 (오늘 봉이 열렸으면 오늘 시가로)
         pend = self.pf.pending.get(symbol)
+        if pend and pend.get("action") == "BUY" and has_today \
+                and session in ("OPEN", "CLOSING_AUCTION") and pend.get("date") != today:
+            # 9-22 실사고: 예수금 부족 재시도(600초 백오프)가 무기한이라, 443060/042700이
+            # 12거래일째 같은 '전환' 신호로 재시도만 반복 — 신호 당시의 추세 전제가 이미
+            # 깨졌을 수 있는데도 오래된 신호 그대로 체결될 뻔함. 매수 예약에도 만료를 둔다
+            dates = [b.date for b in bars]
+            sig_idx = dates.index(pend["date"]) if pend["date"] in dates else None
+            if sig_idx is not None and i - sig_idx > config.PENDING_BUY_EXPIRE_DAYS:
+                del self.pf.pending[symbol]
+                notify.send(f"⌛ [{self.tag}] {symbol} {self._names.get(symbol, '')} "
+                            f"매수 예약 만료 — {pend['date']} 신호가 {i - sig_idx}거래일째 "
+                            f"미체결(주로 예산·예수금 부족)이라 취소합니다. 오래된 전환 "
+                            f"신호로 사는 건 위험(그때의 추세 전제가 깨졌을 수 있음) — "
+                            f"다시 신호가 뜨면 새로 예약됩니다.")
+                brain.journal_append("사건", f"{symbol} 매수예약 만료 취소 "
+                                     f"({pend['date']} 신호, {i - sig_idx}거래일 경과)")
+                pend = None
         if pend and has_today and session in ("OPEN", "CLOSING_AUCTION") \
                 and pend.get("date") != today:
             retry_at = getattr(self, "_retry_after", {})

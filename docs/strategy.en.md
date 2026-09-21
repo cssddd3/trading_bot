@@ -47,6 +47,10 @@ worse, concentrating returns onto a single big winner instead of protecting give
   There is no take-profit target — winners are ridden until the trend ends
 - **A few trades per month is normal.** "Why didn't it buy anything today?" is usually
   the system working as designed
+- **Pending buys expire too** (added 9-22): a buy deferred by insufficient cash is
+  cancelled automatically 5 trading days after the original signal, so a stale "flip"
+  signal can't fill on a trend that's already changed. You get notified on expiry, and a
+  fresh signal re-queues it if conditions still hold
 - Validation: 50 OOS trades, +7.35%/trade, Monte-Carlo loss probability 0.7% ✅
 - Why daily closes: intraday candles are unfinished — provisional flips can vanish by
   the close. The close (set by the closing auction) is the day's most reliable price
