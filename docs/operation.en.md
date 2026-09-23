@@ -14,7 +14,7 @@
 | `/sync` | If you sold directly in the Toss app and the ledger no longer matches the real account, this reconciles it (plain `/resume` will just re-halt on the next reconcile) |
 | `/restart` | Restart the bot (picks up new code) — one tap, no terminal needed |
 | `/budget KR 100000` | Change the KR budget (persisted; same for US) |
-| `/watch 005930` | Manually add a symbol to the watchlist |
+| `/watch 005930` | Manually add a symbol to the watchlist (several at once: `/watch 005930,AAPL,TSLA`) |
 | `/unwatch 005930` | Remove a manual watch |
 | (free text) | Any non-"/" message goes to the read-only AI assistant. It remembers recent conversation — follow-ups like "why did you buy that one earlier?" work |
 

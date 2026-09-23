@@ -135,6 +135,7 @@ Notes for Windows:
 | Heartbeat stops | Bot died — check `logs/watch.log` for the crash, then restart |
 | "halted" alert | Ledger vs. account mismatch — check whether manual trades overlapped the bot's book, then restart |
 | No buys happening | Usually normal (low-turnover strategy) — see the [Strategy Guide](strategy.en.md) |
+| No trades for the first few days after install | Normal — the AI scout needs a few days of news/market data before it starts recommending anything. If you already have stocks you're watching, don't wait: add them right away in Telegram with `/watch 005930,AAPL` (several at once) — they become buy candidates as soon as the strategy signals on them |
 | 🚨 credit-exhausted alert | Anthropic balance empty — only the AI layer stops; trading continues |
 
 Next: **[Operation Guide](operation.en.md)**

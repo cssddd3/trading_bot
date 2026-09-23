@@ -1364,25 +1364,40 @@ class DryRun:
                     notify.send(f"현재 예산: {self._budget_str()}\n"
                                 "변경: /budget KR 100000  또는  /budget US 70000")
             elif base == "/watch":
-                toks = cmd.split()
-                if len(toks) != 2:
+                # 인수 부분을 콤마/공백 아무거나로 쪼갠다 — 여러 종목 한 번에 등록 가능
+                # (9-23: 지인이 설치 직후 자기 관심종목 목록을 넘길 방법이 없어서 헤맴 —
+                # 신규 설치자는 뉴스/시황 데이터가 없어 스카우트가 며칠간 조용할 수 있는데,
+                # 그동안 본인이 이미 보던 종목으로 감시를 바로 시작할 수 있게)
+                arg = cmd[len("/watch"):].strip()
+                syms = [s.upper() for s in arg.replace(",", " ").split() if s]
+                if not syms:
                     cur = ", ".join(f"{s_} {n}" for s_, n in self.pf.manual_watch.items()) or "(없음)"
-                    notify.send(f"수동 감시: {cur}\n추가: /watch MRNA · 해제: /unwatch MRNA")
+                    notify.send(f"수동 감시: {cur}\n"
+                                f"추가(여러 개 가능): /watch 005930,AAPL,TSLA · 해제: /unwatch MRNA")
                 else:
-                    sym = toks[1].upper()
                     try:
-                        infos = self.client.get_stocks([sym])
+                        infos = {i["symbol"]: i for i in self.client.get_stocks(syms)}
                     except Exception:           # noqa: BLE001
-                        infos = []
-                    if not infos:
-                        notify.send(f"⚠️ {sym}: 종목을 찾을 수 없습니다 (KR 6자리 코드 / US 티커)")
-                    else:
-                        name = infos[0].get("name", sym)
+                        infos = {}
+                    added, missing = [], []
+                    for sym in syms:
+                        info = infos.get(sym)
+                        if not info:
+                            missing.append(sym)
+                            continue
+                        name = info.get("name", sym)
                         self.pf.manual_watch[sym] = name
+                        added.append(f"{sym} {name}")
+                    if added:
                         self._apply_manual_watch()
-                        notify.send(f"👁 감시 추가: {sym} {name}\n"
-                                    f"전략 시그널이 나오면 매수 대상이 됩니다 "
-                                    f"(안전장치·예산 검사는 동일 적용)")
+                    msg = ""
+                    if added:
+                        msg += "👁 감시 추가: " + ", ".join(added) + \
+                               "\n전략 시그널이 나오면 매수 대상이 됩니다 (안전장치·예산 검사는 동일 적용)"
+                    if missing:
+                        msg += ("\n" if msg else "") + \
+                               f"⚠️ 못 찾음(KR 6자리 코드/US 티커 확인): {', '.join(missing)}"
+                    notify.send(msg)
             elif base == "/unwatch":
                 toks = cmd.split()
                 sym = toks[1].upper() if len(toks) == 2 else ""
