@@ -1671,17 +1671,10 @@ class DryRun:
         if time.time() - self._last_heartbeat < config.HEARTBEAT["interval_minutes"] * 60:
             return
         self._last_heartbeat = time.time()
-        if self.pf.positions:
-            unreal = sum(self.to_krw(s_, ((self.last_price(s_) or p["avg_price"])
-                                          - p["avg_price"]) * p["quantity"])
-                         for s_, p in self.pf.positions.items())
-            pos = f"보유 {len(self.pf.positions)}종목 평가 {unreal:+,.0f}원"
-        else:
-            pos = "보유 없음"
-        pend = f" · 예약 {len(self.pf.pending)}건" if self.pf.pending else ""
+        # 9-24 사용자 요청: 하트비트는 "가동중"만 짧게. 상세는 /status. 단, 매수중지 상태는
+        # 조용히 숨기면 위험하므로 그때만 한 단어 덧붙인다
         halt = " · 🛑매수중지" if self.pf.halted else ""
-        notify.send(f"💓 [{self.tag}] 정상 가동 {now_kst():%H:%M} · 세션 {session} · "
-                    f"{pos}{pend}{halt} · 궁금한 건 자유롭게 질문 (예: 오늘 뭐했어?)")
+        notify.send(f"💓 [{self.tag}] 가동중 {now_kst():%H:%M}{halt}")
 
     def tick(self) -> dict:
         """1회 순회. 반환: {시장: 세션} — 시장별(KR 주간 / US 야간)로 따로 처리한다."""

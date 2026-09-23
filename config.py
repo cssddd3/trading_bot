@@ -191,7 +191,10 @@ MAX_POSITION_BUDGET_PCT: dict = {"KR": 1.0, "US": 1.0}
 LLM_MODELS: dict = {
     "scout": os.getenv("SCOUT_LLM_MODEL", "claude-sonnet-5"),
     "filter": os.getenv("NEWS_LLM_MODEL", "claude-haiku-4-5"),
-    "assistant": os.getenv("ASSISTANT_LLM_MODEL", "claude-haiku-4-5"),
+    # 9-24: haiku→sonnet. 비서는 사용자 질문 때만 호출돼 저빈도인데, haiku는 "종목명으로
+    # 알려줘" 압박에 사전에 없는 이름을 지어냈다(코드 25개→무관한 대기업 이름 목록).
+    # 다중 턴 참조·"모르면 모른다" 준수는 상위 모델이 안정적. 비용은 하루 몇 콜 수준.
+    "assistant": os.getenv("ASSISTANT_LLM_MODEL", "claude-sonnet-5"),
 }
 
 

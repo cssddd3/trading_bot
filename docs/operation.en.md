@@ -21,7 +21,13 @@
 Automatic alerts: buy/sell fills, blocked-buy reasons, bad-news warnings, new corporate
 filings (📢), AI stock recommendations (🔭 news/market based — watch-only; buys come only
 from validated price rules), scanner signals (🔍), drawdown briefing (📉), hourly heartbeat
-(if it stops, the bot is down — check the machine), end-of-day report, crashes.
+(a one-liner "💓 running HH:MM" — if it stops, the bot is down, check the machine; shows 🛑
+while buying is halted), end-of-day report, crashes.
+
+The AI assistant **remembers the symbols it showed you last turn as data**, so follow-ups like
+"give me those as company names" or "which of that list went up?" stay on topic. Names come
+only from a dictionary the bot has actually verified — unknown symbols are reported as
+"name unknown" rather than invented.
 
 The end-of-day report includes a **7-day AI recommendation scorecard** — how each pick
 has moved since it was recommended, graded automatically every day.

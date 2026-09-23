@@ -14,8 +14,10 @@ import json
 import config
 
 HISTORY_PATH = config.LOG_DIR / "tg_history.json"
+ENTITIES_PATH = config.LOG_DIR / "tg_last_entities.json"   # 직전 답변에서 언급한 종목 (참조 기억)
 HISTORY_MAX_MSGS = 20        # 최근 10문답
 HISTORY_MAX_CHARS = 8000     # 히스토리 총량 상한 (비용/컨텍스트 통제)
+CONTEXT_MAX_CHARS = 9000     # 상태 스냅샷 상한 — 초과 시 로그류부터 잘림 (핵심은 보존)
 
 SYSTEM = """너는 'toss-trader' 자동매매 봇의 상태를 주인에게 설명하는 비서다.
 
@@ -25,6 +27,12 @@ SYSTEM = """너는 'toss-trader' 자동매매 봇의 상태를 주인에게 설�
   KODEX 200인데 "카카오"라고 추측하는 식의 환각 금지) — 데이터에 이름이 없으면 코드만 말하라.
 - 이전 대화가 이어진다. 단, [봇 상태]는 매 질문마다 최신으로 갱신되므로
   과거 답변 속 숫자와 다르면 항상 최신 [봇 상태]가 맞다.
+- **종목은 항상 "코드 이름"으로 함께 말한다.** 코드↔이름 변환은 [종목 사전] 블록으로만 한다 —
+  사전에 없으면 코드를 그대로 쓰고 "(이름 미확인)"이라고 붙인다. 사용자가 "종목명으로
+  알려줘"라고 해도 사전에 없는 이름을 만들어내지 마라 — 모르는 건 모른다고 하는 게 정답이다.
+- 사용자가 "그거/아까 그 종목/위 목록"처럼 직전 답변을 가리키면 [직전 답변에서 언급한 종목]
+  블록이 정답이다 — 새로 추측하지 말고 그 목록을 그대로 변환·설명하라.
+- 개수를 말할 때는 실제 나열한 개수와 반드시 일치시켜라 (헤더 "N개"와 목록 길이가 다르면 안 됨).
 - 텔레그램 메시지이므로 짧고 명확하게 (보통 3~6문장, 필요하면 리스트).
 
 - **너는 돈이 움직이는 어떤 것도 실행할 수 없다** — 매수/매도/중지/재개/예산변경은 절대
@@ -60,84 +68,205 @@ ANSWER_SCHEMA = {
 }
 
 
-def _tail_csv(path, n: int = 12) -> list[str]:
+def _tail_rows(path, n: int) -> list[dict]:
+    """CSV 마지막 n행을 dict로 (헤더 기준)."""
+    import csv
     if not path.exists():
         return []
-    lines = path.read_text().strip().splitlines()
-    return lines[:1] + lines[-n:] if len(lines) > n + 1 else lines
+    with path.open() as f:
+        rows = list(csv.DictReader(f))
+    return rows[-n:]
+
+
+# 마지막 build_context가 만든 종목 사전 — answer()가 답변 속 종목을 뽑아 기억할 때 쓴다
+_NAMES_CACHE: dict[str, str] = {}
+
+
+def _name_map(dr) -> dict[str, str]:
+    """코드→종목명 통합 사전. 9-24 근본원인 수리: 이름이 보유/감시/시그널/스캐너 등 출처마다
+    제각각 있거나 없어서, 비서가 코드를 이름으로 바꿔달라는 요청에 지어낸 이름을 냈다
+    (25개 코드 → 카카오·네이버·GS칼텍스 등 무관한 목록). 봇이 실제로 확인한 이름을 한 곳에
+    모아 항상 컨텍스트에 싣는다 — 사전에 없으면 '미확인'이라고 말하게 한다."""
+    names: dict[str, str] = {}
+    names.update({k: v for k, v in config.WHITELIST.items() if v})
+    try:
+        d = json.loads((config.LOG_DIR / "watchlist.json").read_text())
+        for p in d.get("picks", []):
+            if p.get("name"):
+                names[p["symbol"]] = p["name"]
+    except (OSError, ValueError, KeyError):
+        pass
+    # 스캐너 CSV는 헤더 없는 (date,code,name,price) — 원문 파싱
+    sc_path = config.LOG_DIR / config.SCANNER["shadow_csv"]
+    if sc_path.exists():
+        for line in sc_path.read_text().splitlines()[-200:]:
+            cols = line.split(",")
+            if len(cols) >= 3 and cols[2]:
+                names[cols[1]] = cols[2]
+    for r in _tail_rows(config.LOG_DIR / "scout_picks.csv", 300):
+        if r.get("name"):
+            names[r["symbol"]] = r["name"]
+    names.update({k: v for k, v in (dr.pf.manual_watch or {}).items() if v})
+    names.update({k: v for k, v in (getattr(dr, "_names", {}) or {}).items() if v})
+    return names
+
+
+def _label(sym: str, names: dict[str, str]) -> str:
+    return f"{sym} {names.get(sym) or '(종목명 미확인)'}"
 
 
 def build_context(dr) -> str:
-    """러너(DryRun 인스턴스)에서 현재 상태 스냅샷을 문자열로 만든다."""
-    from run_dryrun import now_kst
+    """러너(DryRun 인스턴스)에서 현재 상태 스냅샷을 문자열로 만든다.
 
-    parts = [f"[봇 상태] {now_kst():%Y-%m-%d %H:%M} KST",
-             f"모드: {dr.tag} | 전략: {dr.key} | 매수중지(halted): {dr.pf.halted}"]
+    9-24 구조 재설계 (근본원인: 산문 기억 + 사전 부재 + 뒤에서부터 잘림 + 약한 모델):
+      - 모든 종목은 `코드 이름`으로만 등장 (통합 사전 _name_map), [종목 사전] 블록 별도 제공
+      - [직전 답변에서 언급한 종목]을 넣어 "그거/아까 그 종목" 참조가 데이터로 이어지게
+      - 핵심(보유·예약·감시·사전·기억)을 앞에, 로그(시그널·체결·일지)를 뒤에 두고
+        글자 상한에 걸리면 로그부터 잘라낸다 — 핵심은 절대 잘리지 않는다
+    """
+    global _NAMES_CACHE
+    from run_dryrun import now_kst
+    names = _name_map(dr)
+    _NAMES_CACHE = names
+
+    core = [f"[봇 상태] {now_kst():%Y-%m-%d %H:%M} KST",
+            f"모드: {dr.tag} | 전략: {dr.key} | 매수중지(halted): {dr.pf.halted}"]
     mism = getattr(dr, "_sync_mismatch", None)
     if dr.pf.halted and mism:
-        parts.append(f"매수중지 원인: 장부-계좌 불일치 ({', '.join(sorted(mism))}) — "
-                     f"토스 앱에서 직접 매도한 경우 /sync 명령으로 해결 (그냥 /resume은 "
-                     f"불일치가 안 풀려서 다시 멈춤). 사용자가 '왜 멈췄어' 류로 물으면 이걸로 답하라.")
+        core.append(f"매수중지 원인: 장부-계좌 불일치 ({', '.join(sorted(mism))}) — "
+                    f"토스 앱에서 직접 매도한 경우 /sync 명령으로 해결 (그냥 /resume은 "
+                    f"불일치가 안 풀려서 다시 멈춤). 사용자가 '왜 멈췄어' 류로 물으면 이걸로 답하라.")
     elif dr.pf.halted:
-        parts.append("매수중지 원인: /stop 또는 /flat 등 수동 정지 (또는 매수 주문 결과 불명 "
-                     "안전정지) — 원인이 불확실하면 계좌를 직접 확인하라고 안내하라.")
+        core.append("매수중지 원인: /stop 또는 /flat 등 수동 정지 (또는 매수 주문 결과 불명 "
+                    "안전정지) — 원인이 불확실하면 계좌를 직접 확인하라고 안내하라.")
     try:
         session, _ = dr.market_session()
-        parts.append(f"시장 세션: {session}")
+        core.append(f"시장 세션: {session}")
     except Exception:                    # noqa: BLE001
         pass
 
+    seen: list[str] = []                 # 컨텍스트에 등장한 종목 (사전 블록용)
+
+    def note(sym: str) -> None:
+        if sym not in seen:
+            seen.append(sym)
+
     if dr.pf.positions:
+        core.append(f"보유 포지션 총 {len(dr.pf.positions)}개:")
         for s, p in dr.pf.positions.items():
+            note(s)
             live = dr.last_price(s) or p["avg_price"]
-            parts.append(f"보유: {s} {dr._names.get(s, '')} {p['quantity']}주 "
-                         f"@{p['avg_price']:,.0f} → 현재 {live:,.0f} "
-                         f"({live / p['avg_price'] - 1:+.2%}) 스탑 {p.get('stop_price') or '없음'}")
+            core.append(f"  · {_label(s, names)} {p['quantity']}주 @{p['avg_price']:,.0f} → 현재 "
+                        f"{live:,.0f} ({live / p['avg_price'] - 1:+.2%}) 스탑 {p.get('stop_price') or '없음'}")
     else:
-        parts.append("보유 포지션: 없음")
-    for s, pend in (dr.pf.pending or {}).items():
-        src = "전환 스캐너(60일 평균 거래대금 상위 200 일일 스캔)" if pend.get("frac") else "기본 전략(st)"
-        parts.append(f"매수/매도 예약(pending): {s} {dr._names.get(s, '')} {pend.get('action')} "
-                     f"다음 시가 — 신호: {pend.get('reason')} ({pend.get('date')} 종가 확정, 출처: {src})")
-    sc = _tail_csv(config.LOG_DIR / config.SCANNER["shadow_csv"], 8)
-    if sc:
-        parts.append("전환 스캐너 최근 포착 (날짜,코드,종목명,신호가 — 여기 있으면 스캐너가 찾은 것):\n"
-                     + "\n".join(sc))
-    parts.append("참고: 모든 매수 신호는 가격 기술 규칙(Supertrend 상승 전환 등)이며 "
-                 "뉴스·호재 기반이 아니다. 뉴스는 매수 차단(거부권)에만 쓰인다.")
+        core.append("보유 포지션: 없음")
+    if dr.pf.pending:
+        core.append(f"다음 시가 예약(pending) 총 {len(dr.pf.pending)}개:")
+        for s, pend in dr.pf.pending.items():
+            note(s)
+            src = "전환 스캐너" if pend.get("frac") else "기본 전략(st)"
+            core.append(f"  · {_label(s, names)} {pend.get('action')} — 신호: {pend.get('reason')} "
+                        f"({pend.get('date')} 종가 확정, 출처: {src})")
+    watch = [s for s in dr.symbols if s not in dr.pf.positions]
+    kr = [s for s in watch if config.market_of(s) == "KR"]
+    us = [s for s in watch if config.market_of(s) != "KR"]
+    for s in watch:
+        note(s)
+    core.append(f"감시 종목 총 {len(watch)}개 (KR {len(kr)} / US {len(us)}) — 보유 제외:")
+    if kr:
+        core.append("  KR: " + ", ".join(_label(s, names) for s in kr))
+    if us:
+        core.append("  US: " + ", ".join(_label(s, names) for s in us))
+
+    ent = _load_entities()
+    if ent:
+        core.append(f"[직전 답변에서 언급한 종목 {len(ent)}개 — 사용자가 '그거/아까 그 종목/위 목록'"
+                    f"이라고 하면 이것을 가리킨다] "
+                    + ", ".join(f"{s} {n}" for s, n in ent.items()))
+        for s in ent:
+            note(s)
+
+    known = [s for s in seen if names.get(s)]
+    unknown = [s for s in seen if not names.get(s)]
+    core.append("[종목 사전 — 코드↔이름 변환은 반드시 여기서만. 여기 없는 이름을 지어내지 말 것] "
+                + ", ".join(f"{s}={names[s]}" for s in known)
+                + (f" | 이름 미확인: {', '.join(unknown)}" if unknown else ""))
+
+    core.append("참고: 모든 매수 신호는 가격 기술 규칙(Supertrend 상승 전환 등)이며 "
+                "뉴스·호재 기반이 아니다. 뉴스는 매수 차단(거부권)에만 쓰인다.")
     if dr.live and dr.broker:
         try:
-            parts.append(f"매수가능금액 {dr.broker.buying_power():,.0f}원 "
-                         f"/ 봇 예산 {dr._budget_str()} — 예산은 실현손익만큼 복리로 변한다")
+            core.append(f"매수가능금액 {dr.broker.buying_power():,.0f}원 "
+                        f"/ 봇 예산 {dr._budget_str()} — 예산은 실현손익만큼 복리로 변한다")
         except Exception:                # noqa: BLE001
             pass
-    parts.append(dr.guard.summary())
+    core.append(dr.guard.summary())
+    try:
+        d = json.loads((config.LOG_DIR / "watchlist.json").read_text())
+        core.append(f"오늘 AI 워치리스트({d.get('date')}): "
+                    + (", ".join(_label(p["symbol"], names) for p in d.get("picks", [])) or "선정 없음")
+                    + f" | 시장메모: {d.get('market_note', '')}")
+    except (OSError, ValueError, KeyError):
+        pass
 
-    wl = config.LOG_DIR / "watchlist.json"
-    if wl.exists():
-        try:
-            d = json.loads(wl.read_text())
-            picks = ", ".join(f"{p['symbol']} {p['name']}" for p in d.get("picks", []))
-            parts.append(f"오늘 워치리스트({d.get('date')}): {picks or '선정 없음'} "
-                         f"| 시장메모: {d.get('market_note', '')}")
-        except (json.JSONDecodeError, KeyError):
-            pass
-
+    # ── 로그류 (상한 초과 시 여기부터 잘린다) ──
+    tail: list[str] = []
+    sc_path = config.LOG_DIR / config.SCANNER["shadow_csv"]
+    if sc_path.exists():
+        rows = sc_path.read_text().strip().splitlines()[-8:]
+        tail.append("전환 스캐너 최근 포착(날짜,코드,이름,신호가):\n" + "\n".join(rows))
     import brain
-    memo = brain.digest(max_chars=1500)
+    memo = brain.digest(max_chars=1200)
     if memo:
-        parts.append("운용 일지(공유 두뇌 — 매매 기록·저녁 리뷰·논지):\n" + memo)
-
-    sig = _tail_csv(dr.signals_path)
+        tail.append("운용 일지(공유 두뇌 — 매매 기록·저녁 리뷰·논지):\n" + memo)
+    sig = _tail_rows(dr.signals_path, 12)
     if sig:
-        parts.append("최근 시그널 로그(헤더+최근):\n" + "\n".join(sig))
-    tr = _tail_csv(dr.trades_path, 6)
+        tail.append("최근 시그널(시각 종목 액션 체결여부 사유):\n" + "\n".join(
+            f"  {r['time'][5:16]} {_label(r['symbol'], names)} {r['action']} "
+            f"{'체결' if r.get('executed') == 'True' else '미체결'} {r.get('reason', '')[:70]}"
+            for r in sig))
+    tr = _tail_rows(dr.trades_path, 6)
     if tr:
-        parts.append("최근 체결 로그:\n" + "\n".join(tr))
-    # 종목명 없이 코드만 주면 LLM이 종목명을 추측(환각)할 위험 — 반드시 이름을 붙여 제공
-    parts.append("감시 종목: " + ", ".join(
-        f"{s} {dr._names.get(s, '(종목명 미확인)')}" for s in dr.symbols))
-    return "\n".join(parts)[:6000]
+        tail.append("최근 체결(청산 완료):\n" + "\n".join(
+            f"  {_label(r['symbol'], names)} {r['entry_date']}→{r['exit_date']} "
+            f"{float(r['pnl_rate']):+.2%} {float(r['pnl']):+,.0f}원 {r.get('exit_reason', '')[:50]}"
+            for r in tr))
+
+    core_txt = "\n".join(core)
+    budget = max(0, CONTEXT_MAX_CHARS - len(core_txt) - 1)
+    tail_txt = "\n".join(tail)[:budget]
+    return core_txt + ("\n" + tail_txt if tail_txt else "")
+
+
+def _load_entities() -> dict[str, str]:
+    try:
+        d = json.loads(ENTITIES_PATH.read_text())
+        return dict(d.get("entities", {}))
+    except (OSError, ValueError):
+        return {}
+
+
+def _extract_entities(reply: str, names: dict[str, str]) -> dict[str, str]:
+    """답변 본문에 등장한 종목(코드 또는 이름)을 사전 기준으로 뽑는다 — 다음 턴의 참조 기억."""
+    import re
+    found: dict[str, str] = {}
+    for sym, name in names.items():
+        hit = re.search(rf"(?<![A-Za-z0-9]){re.escape(sym)}(?![A-Za-z0-9])", reply) is not None
+        if not hit and name and len(name) >= 2 and name in reply:
+            hit = True
+        if hit:
+            found[sym] = name
+        if len(found) >= 80:
+            break
+    return found
+
+
+def _save_entities(entities: dict[str, str]) -> None:
+    try:
+        ENTITIES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ENTITIES_PATH.write_text(json.dumps({"entities": entities}, ensure_ascii=False))
+    except OSError:
+        pass
 
 
 def _load_history() -> list[dict]:
@@ -201,6 +330,10 @@ def answer(question: str, context: str) -> dict | None:
         history += [{"role": "user", "content": user_msg},
                     {"role": "assistant", "content": reply}]
         _save_history(history)
+        # 답변에 등장한 종목을 데이터로 기억 — 다음 턴의 "그거/아까 그 종목" 참조가
+        # 산문이 아니라 코드+이름 목록으로 이어진다 (9-24 근본원인 수리)
+        if _NAMES_CACHE:
+            _save_entities(_extract_entities(reply, _NAMES_CACHE))
         return {"reply": reply,
                 "watch_add": [str(s).upper() for s in data.get("watch_add") or []][:10],
                 "watch_remove": [str(s).upper() for s in data.get("watch_remove") or []][:10]}
