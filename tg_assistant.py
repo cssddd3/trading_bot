@@ -26,14 +26,38 @@ SYSTEM = """너는 'toss-trader' 자동매매 봇의 상태를 주인에게 설�
 - 이전 대화가 이어진다. 단, [봇 상태]는 매 질문마다 최신으로 갱신되므로
   과거 답변 속 숫자와 다르면 항상 최신 [봇 상태]가 맞다.
 - 텔레그램 메시지이므로 짧고 명확하게 (보통 3~6문장, 필요하면 리스트).
-- 너는 봇을 제어할 수 없다. 제어 요청(멈춰줘, 팔아줘, 이 종목 지켜봐줘, 관심종목 등록해줘
-  등)이 오면 실행하지 말고 정확한 명령어를 안내한다. **아래 목록이 명령어 전체다 — 목록에
-  없다고 "모른다"고 답하지 말고, 요청과 가장 가까운 것을 찾아 안내하라**:
+
+- **너는 돈이 움직이는 어떤 것도 실행할 수 없다** — 매수/매도/중지/재개/예산변경은 절대
+  네가 실행하지 못한다. 이런 요청이 오면 정확한 명령어만 안내한다(실행 금지):
   /stop(매수중지) /resume(재개) /flat(전량청산) /status(현황) /sync(장부-계좌 불일치 해소)
-  /sell 종목코드(지정 매도) /budget(예산 변경) /watch 종목코드(관심종목 등록 — 여러 개는
-  콤마로 "/watch 005930,AAPL,TSLA") /unwatch 종목코드(관심종목 해제) /restart(봇 재시작)
+  /sell 종목코드(지정 매도) /budget(예산 변경) /restart(봇 재시작)
+- **예외적으로 관심종목 등록/해제(watch_add, watch_remove)는 네가 직접 실행할 수 있다.**
+  돈이 움직이지 않고(매수 방아쇠 아님 — 감시 대상에만 들어가고 실제 매수는 여전히 전략
+  가격규칙이 결정), 스카우트 AI가 이미 같은 권한으로 감시종목을 추가하고 있어 새로운
+  권한이 아니다. "이거 관심종목에 넣어줘", "아까 보여준 종목들 등록해줘" 같은 요청이
+  명확한 종목코드/티커로 특정되면(직전 대화·직전 리포트에서 언급된 종목 포함해 문맥으로
+  풀어도 됨) watch_add에 그 코드를 담아라. 애매하면(어떤 종목인지 특정 불가) 실행하지
+  말고 reply에서 어떤 종목인지 되물어라 — 확신 없이 watch_add를 채우지 마라.
 - 시황 해설은 데이터 범위 안에서만. 종목 추천/투자 조언은 하지 않는다.
 - 한국어로 답한다."""
+
+ANSWER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reply": {"type": "string", "description": "사용자에게 보낼 답변 (한국어, 3~6문장)"},
+        "watch_add": {
+            "type": "array", "items": {"type": "string"},
+            "description": "관심종목으로 등록할 종목코드/티커. 명확히 특정될 때만 채운다"
+                          " (예: [\"005930\", \"AAPL\"]). 해당 없으면 빈 배열.",
+        },
+        "watch_remove": {
+            "type": "array", "items": {"type": "string"},
+            "description": "관심종목에서 해제할 종목코드/티커. 해당 없으면 빈 배열.",
+        },
+    },
+    "required": ["reply", "watch_add", "watch_remove"],
+    "additionalProperties": False,
+}
 
 
 def _tail_csv(path, n: int = 12) -> list[str]:
@@ -139,15 +163,16 @@ def _save_history(history: list[dict]) -> None:
         pass
 
 
-def answer(question: str, context: str) -> str | None:
+def answer(question: str, context: str) -> dict | None:
     """질문에 답변. 이전 문답(파일 영속)이 이어지고, 봇 상태는 매번 최신으로 갱신.
-    실패 시 None (호출부가 조용히 넘어감)."""
+    반환: {"reply": str, "watch_add": [...], "watch_remove": [...]} | None (실패 시).
+    watch_add/remove 실행은 호출부(run_dryrun) 책임 — 여기선 의도만 뽑는다."""
     try:
         from datetime import datetime, timedelta, timezone
         import anthropic
         client = anthropic.Anthropic()
         kwargs = {}
-        oc = config.output_config_for(config.LLM_MODELS["assistant"], "low")
+        oc = config.output_config_for(config.LLM_MODELS["assistant"], "low", ANSWER_SCHEMA)
         if oc:
             kwargs["output_config"] = oc
         now = datetime.now(timezone(timedelta(hours=9)))
@@ -166,11 +191,19 @@ def answer(question: str, context: str) -> str | None:
         text = next((b.text for b in resp.content if b.type == "text"), "").strip()
         if not text:
             return None
-        text = text[:3800]
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = {"reply": text, "watch_add": [], "watch_remove": []}
+        reply = str(data.get("reply", ""))[:3800]
+        if not reply:
+            return None
         history += [{"role": "user", "content": user_msg},
-                    {"role": "assistant", "content": text}]
+                    {"role": "assistant", "content": reply}]
         _save_history(history)
-        return text
+        return {"reply": reply,
+                "watch_add": [str(s).upper() for s in data.get("watch_add") or []][:10],
+                "watch_remove": [str(s).upper() for s in data.get("watch_remove") or []][:10]}
     except Exception as e:               # noqa: BLE001 - 비서 실패가 매매를 막으면 안 됨
         print(f"  [비서] 응답 실패: {e}")
         return None

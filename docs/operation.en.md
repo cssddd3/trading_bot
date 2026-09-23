@@ -16,7 +16,7 @@
 | `/budget KR 100000` | Change the KR budget (persisted; same for US) |
 | `/watch 005930` | Manually add a symbol to the watchlist (several at once: `/watch 005930,AAPL,TSLA`) |
 | `/unwatch 005930` | Remove a manual watch |
-| (free text) | Any non-"/" message goes to the read-only AI assistant. It remembers recent conversation — follow-ups like "why did you buy that one earlier?" work |
+| (free text) | Any non-"/" message goes to the AI assistant. It remembers recent conversation — follow-ups like "why did you buy that one earlier?" work. **It can directly add/remove watchlist symbols from chat** ("add this to my watchlist") — an exception because no money moves. Anything that moves money (buy/sell/budget/stop) is never executed from chat, only via the commands above |
 
 Automatic alerts: buy/sell fills, blocked-buy reasons, bad-news warnings, new corporate
 filings (📢), AI stock recommendations (🔭 news/market based — watch-only; buys come only

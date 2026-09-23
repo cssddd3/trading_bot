@@ -1337,16 +1337,77 @@ class DryRun:
         notify.send(f"{emoji} [{self.tag}] 매도\n{symbol} {self._names.get(symbol, '')} "
                     f"{qty:g}주 @ {px_disp}{unit}\n손익 {pnl_krw:+,.0f}원 ({rate:+.2%})\n{reason}")
 
+    def _watch_add(self, syms: list[str]) -> str:
+        """관심종목 등록 — /watch 명령과 비서(LLM)의 watch_add가 공유하는 실행부.
+        9-23: 돈이 움직이지 않는 행동(감시 추가만, 매수는 여전히 전략 가격규칙이 결정)이라
+        비서가 자연어 요청("이거 등록해줘")으로도 직접 실행하게 허용 — 스카우트 AI가 이미
+        같은 권한으로 감시종목을 추가해온 것과 같은 범주. 매수/매도/예산은 절대 이 경로로
+        안 늘린다 (대원칙 1 불변, 실행부는 여전히 결정적 코드 하나뿐)."""
+        try:
+            infos = {i["symbol"]: i for i in self.client.get_stocks(syms)}
+        except Exception:                   # noqa: BLE001
+            infos = {}
+        added, missing = [], []
+        for sym in syms:
+            info = infos.get(sym)
+            if not info:
+                missing.append(sym)
+                continue
+            name = info.get("name", sym)
+            self.pf.manual_watch[sym] = name
+            added.append(f"{sym} {name}")
+        if added:
+            self._apply_manual_watch()
+            self.pf.save()
+        msg = ""
+        if added:
+            msg += "👁 감시 추가: " + ", ".join(added) + \
+                   "\n전략 시그널이 나오면 매수 대상이 됩니다 (안전장치·예산 검사는 동일 적용)"
+        if missing:
+            msg += ("\n" if msg else "") + \
+                   f"⚠️ 못 찾음(KR 6자리 코드/US 티커 확인): {', '.join(missing)}"
+        return msg or "추가할 종목이 없습니다"
+
+    def _watch_remove(self, syms: list[str]) -> str:
+        """관심종목 해제 — /unwatch 명령과 비서의 watch_remove가 공유하는 실행부."""
+        removed, missing = [], []
+        for sym in syms:
+            if sym in self.pf.manual_watch:
+                name = self.pf.manual_watch.pop(sym)
+                if sym not in self.pf.positions and sym in self.symbols:
+                    self.symbols.remove(sym)
+                tag = " (보유 중이라 관리는 계속됨)" if sym in self.pf.positions else ""
+                removed.append(f"{sym} {name}{tag}")
+            else:
+                missing.append(sym or "?")
+        if removed:
+            self.pf.save()
+        msg = ("👁 감시 해제: " + ", ".join(removed)) if removed else ""
+        if missing:
+            msg += ("\n" if msg else "") + \
+                   f"⚠️ 수동 감시 목록에 없음: {', '.join(missing)}"
+        return msg or "해제할 종목이 없습니다"
+
     # ── 텔레그램 킬 스위치 + LLM 비서 ─────────────────────────
     def _handle_commands(self) -> None:
         self.pf.tg_offset, commands, questions = notify.poll_commands(self.pf.tg_offset)
         if questions:
             self.pf.save()               # offset 먼저 저장 (재시작 시 중복 응답 방지)
             import tg_assistant
-            reply = tg_assistant.answer("\n".join(questions),
-                                        tg_assistant.build_context(self))
-            if reply:
-                notify.send(f"🤖 {reply}")
+            result = tg_assistant.answer("\n".join(questions),
+                                         tg_assistant.build_context(self))
+            if result:
+                extra = []
+                # 9-23: 비서가 뽑아낸 관심종목 등록/해제만 실행 — 결정적 코드(_watch_add/
+                # _watch_remove)가 실제 반영을 하고, 비서는 '무엇을' 의도했는지만 판단
+                if result.get("watch_add"):
+                    extra.append(self._watch_add(result["watch_add"]))
+                if result.get("watch_remove"):
+                    extra.append(self._watch_remove(result["watch_remove"]))
+                msg = result["reply"]
+                if extra:
+                    msg += "\n\n" + "\n".join(extra)
+                notify.send(f"🤖 {msg}")
             else:
                 notify.send("🤖 (LLM 응답 실패 — /status 로 기본 현황은 확인할 수 있어요)")
         for cmd in commands:
@@ -1375,40 +1436,12 @@ class DryRun:
                     notify.send(f"수동 감시: {cur}\n"
                                 f"추가(여러 개 가능): /watch 005930,AAPL,TSLA · 해제: /unwatch MRNA")
                 else:
-                    try:
-                        infos = {i["symbol"]: i for i in self.client.get_stocks(syms)}
-                    except Exception:           # noqa: BLE001
-                        infos = {}
-                    added, missing = [], []
-                    for sym in syms:
-                        info = infos.get(sym)
-                        if not info:
-                            missing.append(sym)
-                            continue
-                        name = info.get("name", sym)
-                        self.pf.manual_watch[sym] = name
-                        added.append(f"{sym} {name}")
-                    if added:
-                        self._apply_manual_watch()
-                    msg = ""
-                    if added:
-                        msg += "👁 감시 추가: " + ", ".join(added) + \
-                               "\n전략 시그널이 나오면 매수 대상이 됩니다 (안전장치·예산 검사는 동일 적용)"
-                    if missing:
-                        msg += ("\n" if msg else "") + \
-                               f"⚠️ 못 찾음(KR 6자리 코드/US 티커 확인): {', '.join(missing)}"
-                    notify.send(msg)
+                    notify.send(self._watch_add(syms))
             elif base == "/unwatch":
                 toks = cmd.split()
                 sym = toks[1].upper() if len(toks) == 2 else ""
-                if sym in self.pf.manual_watch:
-                    name = self.pf.manual_watch.pop(sym)
-                    if sym not in self.pf.positions and sym in self.symbols:
-                        self.symbols.remove(sym)
-                    notify.send(f"👁 감시 해제: {sym} {name}"
-                                + (" (보유 중이라 관리는 계속됨)" if sym in self.pf.positions else ""))
-                else:
-                    notify.send(f"⚠️ {sym or '?'}: 수동 감시 목록에 없습니다")
+                msg = self._watch_remove([sym])
+                notify.send(msg)
             elif cmd == "/stop":
                 self.pf.halted = True
                 notify.send(f"🛑 [{self.tag}] 신규 매수 중지. 보유분 손절/청산은 계속 동작. /resume 으로 재개")
