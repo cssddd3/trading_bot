@@ -47,7 +47,7 @@ can open it; control stays behind the Telegram chat-id gate).
 
 - On the bot's machine: http://localhost:8787
 - From a phone on the same Wi-Fi: `http://<machine-ip>:8787`
-- Port: `DASHBOARD` in `config.py`
+- Port: set `DASHBOARD_PORT=8788` in `.env` (for a second bot instance on the same machine)
 
 ## Budgets vs. cash
 

@@ -82,7 +82,7 @@ TELEGRAM_CHAT_ID=         # optional
 DART_API_KEY=             # optional
 ```
 
-> ⚠️ Never share or commit `.env` or `~/.toss_token_cache.json`.
+> ⚠️ Never share or commit `.env` or `~/.toss_token_cache_*.json` (one token cache per key).
 
 ## 4. Pass the validation gate (required before live, once per machine)
 
@@ -125,6 +125,39 @@ Notes for Windows:
   this matters for overnight US sessions
 - Auto-start on login: Task Scheduler → Create Basic Task → trigger "At log on" →
   program `powershell`, arguments `-WindowStyle Hidden -File "C:\path\to\toss-trader\start.ps1" live`
+
+## 5-1. A second bot on the same machine (e.g. a family member's account)
+
+Each bot is fully self-contained per directory (ledger, logs, lock, token cache). Just install
+again into a sibling directory — `orore` in this example:
+
+```bash
+cd "$(dirname "$PWD")"                       # parent of the first bot
+git clone https://github.com/cssddd3/trading_bot.git orore && cd orore
+pip3 install -r requirements.txt
+cp .env.example .env
+mkdir -p data/scanner && cp ../toss-trader/data/scanner/universe_seed.json data/scanner/
+```
+
+Things that **must** be separate in `.env`:
+- `TOSS_CLIENT_ID/SECRET` — that person's own account keys (and register this machine's public IP
+  in the WTS IP allowlist of *that* account)
+- `TELEGRAM_BOT_TOKEN/CHAT_ID` — a **newly created, separate bot** (two processes polling the same
+  bot token steal each other's messages)
+- `DASHBOARD_PORT=8788` — so it doesn't collide with the first bot's 8787
+- `LIVE_BUDGET_KR/US` — that account's budget
+
+`ANTHROPIC_API_KEY` and `DART_API_KEY` can be shared. Then proceed exactly as for the first bot:
+
+```bash
+python3 run_backtest.py -t st --validate     # once per directory
+./start.sh                                   # dry-run first
+./start.sh live                              # then live
+```
+
+Stop, logs and restart are per directory too (`./stop.sh`, `tail -f logs/watch.log`, Telegram
+`/restart`). Token caches are per key (`~/.toss_token_cache_<key-hash>.json`), so the two bots
+never invalidate each other's tokens.
 
 ## 6. Troubleshooting
 

@@ -158,7 +158,9 @@ STREAM: dict = {
 
 # 웹 대시보드 (읽기 전용): 봇이 매 틱 스냅샷을 쓰고 내장 서버가 보여준다.
 # 같은 컴퓨터: http://localhost:8787 / 같은 와이파이 폰: http://<맥IP>:8787
-DASHBOARD: dict = {"enabled": True, "port": 8787}
+# 9-27: 한 컴퓨터에서 봇 두 개(가족 계좌)면 포트가 겹쳐 둘째는 대시보드를 못 연다 →
+# .env의 DASHBOARD_PORT로 인스턴스마다 다르게 (예: 8788)
+DASHBOARD: dict = {"enabled": True, "port": int(os.getenv("DASHBOARD_PORT", "8787"))}
 
 # 헬스체크(하트비트): 봇이 살아있다는 신호를 주기적으로 텔레그램에 보낸다.
 # 이 메시지가 제때 안 오면 봇이 죽었다는 뜻 (전원/네트워크/크래시).

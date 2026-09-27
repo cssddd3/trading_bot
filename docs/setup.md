@@ -81,7 +81,7 @@ TELEGRAM_CHAT_ID=         # 선택
 DART_API_KEY=             # 선택
 ```
 
-> ⚠️ `.env`와 `~/.toss_token_cache.json`은 절대 공유/커밋 금지.
+> ⚠️ `.env`와 `~/.toss_token_cache_*.json`(토큰 캐시, 키별로 하나씩)은 절대 공유/커밋 금지.
 
 ## 4. 검증 게이트 통과 (실전 전 필수, 컴퓨터마다 1회)
 
@@ -128,6 +128,37 @@ Get-Content logs\watch.log -Wait -Tail 30   # 로그 실시간 보기
   `-WindowStyle Hidden -File "C:\내경로\toss-trader\start.ps1" live`
 - 명령 프롬프트(cmd)만 쓴다면: `python -u run_dryrun.py --watch --live >> logs\watch.log 2>&1`
   (단, 창을 닫으면 봇도 꺼진다 — PowerShell 스크립트 사용 권장)
+
+## 5-1. 같은 컴퓨터에서 두 번째 봇 돌리기 (가족 계좌 등)
+
+봇은 디렉토리 단위로 완전히 독립이다 (장부·로그·잠금·토큰 캐시 모두 분리). 첫 봇 옆에
+새 디렉토리로 한 번 더 설치하면 된다 — 예시는 `orore`:
+
+```bash
+cd "$(dirname "$PWD")"                       # 첫 봇의 상위 디렉토리로
+git clone https://github.com/cssddd3/trading_bot.git orore && cd orore
+pip3 install -r requirements.txt
+cp .env.example .env
+mkdir -p data/scanner && cp ../toss-trader/data/scanner/universe_seed.json data/scanner/
+```
+
+`.env`에서 **반드시 따로** 넣어야 하는 것:
+- `TOSS_CLIENT_ID/SECRET` — 그 사람 본인 계좌의 키 (WTS 허용 IP에 이 컴퓨터 공인 IP 등록도 그 계좌에서)
+- `TELEGRAM_BOT_TOKEN/CHAT_ID` — **새로 만든 별도 봇** (같은 봇 토큰을 두 프로세스가 읽으면 메시지를 서로 뺏어감)
+- `DASHBOARD_PORT=8788` — 첫 봇(8787)과 겹치지 않게
+- `LIVE_BUDGET_KR/US` — 그 계좌 예산
+
+공유해도 되는 것: `ANTHROPIC_API_KEY`, `DART_API_KEY`. 그 다음은 첫 봇과 동일하게:
+
+```bash
+python3 run_backtest.py -t st --validate     # 디렉토리마다 1회
+./start.sh                                   # 드라이런으로 먼저
+./start.sh live                              # 확인 후 실전
+```
+
+정지·로그·재시작도 각 디렉토리 안에서 `./stop.sh`, `tail -f logs/watch.log`, 텔레그램 `/restart`로
+따로 한다. (토큰 캐시가 키별 파일 `~/.toss_token_cache_<키해시>.json`로 분리돼 있어 두 봇이
+서로의 토큰을 무효화하지 않는다.)
 
 ## 6. 문제 해결
 

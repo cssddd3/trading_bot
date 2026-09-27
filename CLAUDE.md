@@ -15,7 +15,7 @@
 5. **open-fail.** 모든 부가 기능(LLM/뉴스/공시/스트림/대시보드)은 죽어도 매매를 막지 않는다.
    단, 조용히 죽으면 안 되는 것은 텔레그램 경보를 보낸다 (크레딧 소진 등).
 6. 주문 코드를 추가할 때는 안전장치(한도 체크)를 **같은 커밋**에 포함한다.
-7. `.env`, `~/.toss_token_cache.json` 절대 커밋 금지. logs/·data/ 도 gitignore (계좌기록/캐시).
+7. `.env`, `~/.toss_token_cache_*.json`(키별 토큰 캐시) 절대 커밋 금지. logs/·data/ 도 gitignore (계좌기록/캐시).
 8. 기능 변경 시 문서를 **같은 턴에** 갱신한다: README.md(랜딩) + docs/setup·operation·strategy.md
    (사람용, 서로 링크) + 이 파일(개발용). 다이어그램은 mermaid (아스키 박스는 한글 폭으로 깨짐).
 
@@ -287,8 +287,14 @@ look-ahead 방지). LLM에 과거 종목명·날짜를 주면 백테스트 오�
 ## 5. 토스 Open API 핵심
 
 - Base `https://openapi.tossinvest.com` / OAuth client_credentials —
-  **재발급 시 이전 토큰 즉시 무효** → toss/auth.py가 ~/.toss_token_cache.json 캐시 (86400s).
-  같은 키를 두 곳에서 쓰면 서로 죽인다
+  **재발급 시 이전 토큰 즉시 무효** → toss/auth.py가 캐시 (86400s). 같은 키를 두 곳에서
+  쓰면 서로 죽인다. **9-27: 캐시 파일을 client_id별로 분리** — `cache_path(client_id)` =
+  `~/.toss_token_cache_<sha256(client_id)[:8]>.json`. 계기: 한 컴퓨터(같은 홈)에서 가족 계좌
+  봇 두 개(`../orore`)를 돌리려는데 단일 캐시 파일을 둘이 덮어써 상대 토큰을 읽고 401 →
+  재발급 → 상대 토큰 무효화 루프가 생기는 구조였음. 같이 고친 것: `DASHBOARD_PORT` env
+  (둘째 인스턴스 8788), setup.md §5-1 두 번째 봇 설치 절(별도 텔레그램 봇 필수 — 같은 봇
+  토큰을 두 프로세스가 getUpdates 하면 오프셋 경합으로 메시지를 서로 뺏음; data/ 는
+  gitignore라 universe_seed.json 복사 필요). 잠금(logs/live.lock)·pid·장부는 원래 디렉토리별
 - 시세 `GET /api/v1/prices?symbols=` (최대 200) / 캔들 `GET /api/v1/candles` (count≤200,
   before/nextBefore 페이지네이션, adjusted=true 필수) / 잔고 `GET /api/v1/holdings`
   / 가용금 get_buying_power(currency) / 랭킹 get_rankings / 환율 exchange-rate
