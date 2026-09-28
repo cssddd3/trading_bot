@@ -139,7 +139,12 @@ def main():
     ap.add_argument("--no-cache", action="store_true")
     args = ap.parse_args()
 
-    symbols = args.symbol or list(config.WHITELIST)
+    # --validate는 감시 화이트리스트가 아니라 고정 검증 집합을 쓴다 (표본 ≥30건 보장,
+    # 설치본마다 결과가 같아야 게이트가 의미 있음 — 9-28 orore 게이트 실패 수리)
+    if args.validate and not args.symbol:
+        symbols = list(getattr(config, "VALIDATION_SYMBOLS", None) or config.WHITELIST)
+    else:
+        symbols = args.symbol or list(config.WHITELIST)
     params = {**config.STRATEGY_PARAMS.get(args.strategy, {}), **parse_params(args.param)}
 
     client = None

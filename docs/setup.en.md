@@ -91,6 +91,9 @@ python3 run_backtest.py -t st --validate    # Windows: python
 ```
 
 Live mode refuses to start unless `logs/strategy_validation.json` records passed=true.
+The gate runs on a **fixed validation set** (`config.VALIDATION_SYMBOLS`, 16 KR/US symbols),
+not on your watchlist — so every install is judged on the same sample.
+(As of 2026-09-28: 53 OOS trades, +7.1% expectancy, 0.9% Monte-Carlo loss probability — pass.)
 
 ## 5. Run
 

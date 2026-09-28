@@ -90,6 +90,9 @@ python3 run_backtest.py -t st --validate    # 윈도우는 python3 대신 python
 ```
 
 `logs/strategy_validation.json`에 passed=true가 기록돼야 `--live`가 기동한다.
+검증은 감시 화이트리스트가 아니라 **고정 검증 종목 집합**(`config.VALIDATION_SYMBOLS`, KR/US
+16종목)으로 돌아간다 — 어느 컴퓨터에서 돌려도 같은 표본으로 판정되게 하기 위해서다.
+(2026-09-28 기준 OOS 53건, 기대값 +7.1%, 몬테카를로 손실확률 0.9%로 통과.)
 
 ## 5. 실행
 
