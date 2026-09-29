@@ -20,7 +20,7 @@ import config
 from news import fetch_headlines
 
 KST = timezone(timedelta(hours=9))
-CACHE_PATH = config.LOG_DIR / "news_verdicts.json"
+CACHE_PATH = config.INTEL_DIR / "news_verdicts.json"   # 9-29: SHARED_INTEL_DIR면 두 봇 공유
 
 # 러너가 등록하는 API 오류 콜백 (크레딧 소진 경보용). 없으면 무시.
 on_api_error = None
@@ -139,6 +139,17 @@ class NewsFilter:
 
     def _save_cache(self) -> None:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # 9-29: 캐시를 두 봇이 공유(SHARED_INTEL_DIR)할 수 있으므로 통째로 덮어쓰면 상대가
+        # 방금 저장한 판정이 사라진다 → 저장 직전에 파일을 다시 읽어 종목별로 더 최신
+        # 판정을 남기며 병합 (last-writer-wins 방지)
+        try:
+            disk = json.loads(CACHE_PATH.read_text()) if CACHE_PATH.exists() else {}
+        except (OSError, ValueError):
+            disk = {}
+        for sym, d in disk.items():
+            mine = self._cache.get(sym)
+            if not mine or str(d.get("checked_at", "")) > str(mine.get("checked_at", "")):
+                self._cache[sym] = d
         CACHE_PATH.write_text(json.dumps(self._cache, ensure_ascii=False, indent=2))
 
     def _cached(self, symbol: str) -> Verdict | None:

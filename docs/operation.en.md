@@ -65,6 +65,28 @@ python3 run_dryrun.py --adopt 005930,000660 --live
 Only the listed symbols are adopted (the bot then manages their stops/news/exits).
 Everything else you hold remains untouchable.
 
+## Sharing intel between two bots (same machine, family accounts)
+
+Two bots each run their own AI scout, so their picks differ and LLM cost doubles. This
+setting **shares market intel while keeping account data separate**:
+
+```ini
+# both .env files point at the same folder
+SHARED_INTEL_DIR=/Users/me/Documents/claude/shared-intel
+# exactly one bot is the leader (runs the AI scout); the others only read
+SCOUT_ROLE=leader        # first bot
+SCOUT_ROLE=follower      # second bot
+```
+
+| Shared (SHARED_INTEL_DIR) | Kept per account |
+|---|---|
+| Scout watchlist + market note, AI recommendation ledger, news-verdict cache | Ledger, budgets, stops, pending orders, risk counters, operating journal, assistant memory, token cache |
+
+Whenever the leader recommends a new symbol, the follower adds it to its watchlist with a
+"🔭 [shared watchlist]" alert. **Watching only** — each bot still decides buys from its own
+strategy signals, budget and cash, so the same pick may be bought by one bot, both, or neither
+(a small-budget bot can't buy expensive shares).
+
 ## Sharing with friends (Telegram channel)
 
 Create a Telegram channel → add the bot as an admin → add

@@ -50,6 +50,13 @@ toss/client.py의 place_order를 직접 호출하지 말 것.
 - `logs/scout_picks.csv` AI 추천 원장 (date,symbol,name,price,thesis — _log_scout_picks가
   신규 픽만 기록, 마감 리포트의 7일 성적표 _scout_scorecard 근거. 9-08 도입 — 이후부터 축적)
 
+- **공유 가능 정보(config.INTEL_DIR, 9-29)**: `watchlist.json`·`scout_picks.csv`·
+  `news_verdicts.json` 세 파일은 `.env SHARED_INTEL_DIR`이 있으면 그 폴더에서 읽고 쓴다
+  (두 봇 공유). `SCOUT_ROLE=follower`면 LLM 스카우트를 안 돌리고 leader가 쓴 워치리스트만
+  읽어 감시에 반영(`_follow_shared_watchlist`). **나머지 상태 파일은 전부 계좌별** —
+  절대 INTEL_DIR로 옮기지 말 것. 뉴스 캐시는 두 프로세스가 같이 쓰므로 `_save_cache`가
+  저장 직전 파일을 재읽어 병합(last-writer-wins 방지). 워치리스트는 leader만 쓴다.
+
 안전장치 체인 (매수 1건): 후보 규칙필터 → LLM 선정(감시 추가만) → 전략 가격 시그널
 → RiskGuard(예산/일일손실/횟수/쿨다운/경고종목) → LLM 뉴스 거부권 → 주문 → 즉시 손절 등록.
 그 외: --live+LIVE_TRADING=1 이중 잠금, TT_LIVE_INTENT(내부 플래그, main()만 세팅 —
@@ -284,6 +291,16 @@ look-ahead 방지). LLM에 과거 종목명·날짜를 주면 백테스트 오�
   봇 + 저회전 전략 = 긴 침묵이 정상. 수리: `_budget_diagnosis()` — 기동 시·마감 리포트에
   "💡 예산 진단"(1주 값이 상한 초과인 감시 종목·상한 수치·/budget /watch 안내). 예산 자체는
   사용자 결정이라 안 건드림. setup(.en).md 문제해결 표에 행 추가.
+- **9-29 (저녁) 실사고 2건 + 두 봇 정보 공유 도입**: ① 재시작하면 그날 스카우트가 추가한
+  감시 종목이 증발 — run_scout가 시장별 picks를 '덮어쓰기'해서 마지막 실행(픽 0개)만
+  파일에 남고, 재시작 복원은 그 파일 기준. orore 예산 조정 재시작 때 국내 9종목이 사라짐.
+  수리: 같은 날 픽은 누적(최신 앞, 상한 config.SCOUT daily_picks_keep=30 기본).
+  ② `config.load_env()`가 파일 하단(구 190행)에서 호출돼 그 위의 모듈 레벨 os.getenv
+  (DASHBOARD_PORT 등)는 .env를 못 봄 — 9-27에 넣은 DASHBOARD_PORT가 조용히 무시되고
+  있었음. 수리: load_env()를 함수 정의 직후로 이동. **교훈: 모듈 레벨 getenv를 추가할 땐
+  load_env() 호출 위치보다 아래인지 확인.** ③ 사용자 지시 "두 봇이 정보 공유 못 하나" →
+  INTEL_DIR/SCOUT_ROLE(§1 상태 파일 참조). 본계정 leader, orore follower, 공유 폴더
+  ../shared-intel (본계정 파일로 시드). 스카우트 LLM 비용은 1회분으로.
 - **텔레그램**: /stop /resume /flat /sell(종목 지정 매도 — 장 열림 즉시/닫힘 다음 시가 예약,
   봇 장부 종목만) /restart /status /budget /watch(9-23: 콤마·공백 아무거나로 여러 종목 한
   번에 — "/watch 005930,AAPL,TSLA". 지인이 설치 직후 무매매 기간에 자기 관심종목 넘길 방법이

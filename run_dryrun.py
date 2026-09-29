@@ -611,7 +611,7 @@ class DryRun:
 
     def _log_scout_picks(self, picks: list[dict]) -> None:
         """AI 추천을 추천 시점 가격과 함께 기록 — 1주 성적표(마감 리포트)의 원장."""
-        path = config.LOG_DIR / "scout_picks.csv"
+        path = config.INTEL_DIR / "scout_picks.csv"
         try:
             new_file = not path.exists()
             with path.open("a", newline="") as f:
@@ -627,7 +627,7 @@ class DryRun:
 
     def _scout_scorecard(self, days: int = 7) -> list[str]:
         """최근 N일 AI 추천의 추천 시점 대비 등락 — 잘 맞았는지 스스로 채점한다."""
-        path = config.LOG_DIR / "scout_picks.csv"
+        path = config.INTEL_DIR / "scout_picks.csv"
         if not path.exists():
             return []
         cutoff = (now_kst().date() - timedelta(days=days)).isoformat()
@@ -656,10 +656,26 @@ class DryRun:
                          " 구조적으로 되돌림 위험이 큽니다 (9-17 프롬프트 보정 반영, 관찰 지속 중)")
         return lines
 
+    def _follow_shared_watchlist(self, market: str) -> bool:
+        """SCOUT_ROLE=follower: LLM 스카우트를 돌리지 않고 leader가 쓴 공유 워치리스트만
+        읽어 감시에 반영한다 (9-29 두 봇 정보 공유). 처리했으면 True."""
+        if config.SCOUT_ROLE != "follower":
+            return False
+        before = set(self.symbols)
+        self._apply_watchlist()          # 오늘자 공유 파일의 픽을 감시에 추가 (기존 유지)
+        new = [s for s in self.symbols if s not in before]
+        if new:
+            names = ", ".join(f"{s} {self._names.get(s, '')}" for s in new)
+            print(f"[스카우트/{market}] 공유 워치리스트 반영(follower): {names}")
+            notify.send(f"🔭 [공유 워치리스트] leader 봇의 추천을 감시에 추가: {names}")
+        return True
+
     def _maybe_scout(self, market: str) -> None:
         """장전(PRE)에 그 시장의 오늘자 워치리스트가 없으면 한 번 생성."""
         if not (config.SCOUT["auto_run_premarket"] and config.SCOUT["use_watchlist"]
                 and self.news):
+            return
+        if self._follow_shared_watchlist(market):
             return
         data = load_watchlist()
         if data and market in data.get("markets", {}):
@@ -679,6 +695,8 @@ class DryRun:
         if time.time() - self._last_scout_check < mins * 60:
             return
         self._last_scout_check = time.time()
+        if self._follow_shared_watchlist(market):
+            return
 
         today = now_kst().date().isoformat()
         if self._seen_date != today:
@@ -2075,7 +2093,7 @@ class DryRun:
     @staticmethod
     def _market_note() -> str:
         try:
-            d = json.loads((config.LOG_DIR / "watchlist.json").read_text())
+            d = json.loads((config.INTEL_DIR / "watchlist.json").read_text())
             return d.get("market_note", "") if d.get("date") == now_kst().date().isoformat() \
                 else ""
         except (OSError, ValueError):

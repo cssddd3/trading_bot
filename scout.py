@@ -24,7 +24,7 @@ from news import fetch_headlines
 from toss.client import TossClient
 
 KST = timezone(timedelta(hours=9))
-WATCHLIST_PATH = config.LOG_DIR / "watchlist.json"
+WATCHLIST_PATH = config.INTEL_DIR / "watchlist.json"   # 9-29: SHARED_INTEL_DIR면 두 봇 공유
 # 감사 H1: 레버리지/인버스 상품 제외 (스카우트·스캐너 공용 — 단일 정의)
 LEVERAGE_WORDS = ("레버리지", "인버스", "2X", "3X", "BULL", "BEAR", "ULTRA", "곱버")
 
@@ -307,10 +307,17 @@ def run_scout(client: TossClient | None = None, market: str = "KR",
     today = datetime.now(KST).date().isoformat()
     prev = load_watchlist() or {}
     markets = prev.get("markets", {}) if prev.get("date") == today else {}
+    # 9-29: 그날의 픽은 누적한다 — 새 실행이 이전 실행의 픽을 지우지 않는다. 재시작 시
+    # 감시 종목은 이 파일에서 복원되는데, 덮어쓰기 방식이면 낮에 쌓인 픽이 재시작(코드
+    # 업데이트 등) 한 번에 전부 증발했다 (orore 실사고: 국내 9종목 감시가 사라짐).
+    # 최신 실행 픽을 앞에 두고, 이전 픽은 뒤에 유지. 하루 상한은 daily_picks_keep.
+    fresh_syms = {p["symbol"] for p in picks}
+    kept = [p for p in (markets.get(market) or {}).get("picks", [])
+            if p["symbol"] not in fresh_syms]
     markets[market] = {
         "generated_at": datetime.now(KST).isoformat(timespec="seconds"),
         "market_note": str(result.get("market_note", ""))[:300],
-        "picks": picks,
+        "picks": (picks + kept)[: config.SCOUT.get("daily_picks_keep", 30)],
     }
     merged = [p for m in markets.values() for p in m["picks"]]
     data = {"date": today,

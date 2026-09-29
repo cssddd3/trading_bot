@@ -30,6 +30,23 @@ def load_env(path: Path = ROOT / ".env") -> None:
         os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
+# 9-29: .env는 여기서 한 번 미리 읽는다. 이 아래의 모듈 레벨 os.getenv(DASHBOARD_PORT,
+# LLM_MODELS, SHARED_INTEL_DIR 등)가 .env 값을 보게 하기 위해서다 — 이전엔 파일 하단에서
+# 로드해 DASHBOARD_PORT 같은 상단 설정이 .env 값을 조용히 무시했다(실사고).
+load_env()
+
+# 두 봇(가족 계좌)이 공유해도 되는 '시장 정보'의 디렉토리 — 스카우트 워치리스트·AI 추천
+# 원장(scout_picks.csv)·뉴스 판정 캐시(news_verdicts.json). .env의 SHARED_INTEL_DIR로 같은
+# 폴더를 가리키면 나눠 쓴다. 계좌별 파일(장부·리스크·운용일지·텔레그램 기억·토큰)은 절대
+# 여기 두지 않는다. 미설정이면 자기 logs/ (기존과 동일).
+SHARED_INTEL_DIR = (Path(os.getenv("SHARED_INTEL_DIR")).expanduser()
+                    if os.getenv("SHARED_INTEL_DIR") else None)
+INTEL_DIR = SHARED_INTEL_DIR or LOG_DIR
+# leader: LLM 스카우트를 직접 돌려 공유 워치리스트를 쓴다 / follower: LLM 호출 없이 읽기만
+# (LLM 비용 1회분·두 봇의 추천 동일). 공유를 안 쓰면 항상 leader로 동작.
+SCOUT_ROLE = os.getenv("SCOUT_ROLE", "leader").strip().lower()
+
+
 def credentials() -> tuple[str, str]:
     load_env()
     cid, secret = os.getenv("TOSS_CLIENT_ID", ""), os.getenv("TOSS_CLIENT_SECRET", "")

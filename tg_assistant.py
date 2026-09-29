@@ -90,7 +90,7 @@ def _name_map(dr) -> dict[str, str]:
     names: dict[str, str] = {}
     names.update({k: v for k, v in config.WHITELIST.items() if v})
     try:
-        d = json.loads((config.LOG_DIR / "watchlist.json").read_text())
+        d = json.loads((config.INTEL_DIR / "watchlist.json").read_text())
         for p in d.get("picks", []):
             if p.get("name"):
                 names[p["symbol"]] = p["name"]
@@ -103,7 +103,7 @@ def _name_map(dr) -> dict[str, str]:
             cols = line.split(",")
             if len(cols) >= 3 and cols[2]:
                 names[cols[1]] = cols[2]
-    for r in _tail_rows(config.LOG_DIR / "scout_picks.csv", 300):
+    for r in _tail_rows(config.INTEL_DIR / "scout_picks.csv", 300):
         if r.get("name"):
             names[r["symbol"]] = r["name"]
     names.update({k: v for k, v in (dr.pf.manual_watch or {}).items() if v})
@@ -202,7 +202,7 @@ def build_context(dr) -> str:
             pass
     core.append(dr.guard.summary())
     try:
-        d = json.loads((config.LOG_DIR / "watchlist.json").read_text())
+        d = json.loads((config.INTEL_DIR / "watchlist.json").read_text())
         core.append(f"오늘 AI 워치리스트({d.get('date')}): "
                     + (", ".join(_label(p["symbol"], names) for p in d.get("picks", [])) or "선정 없음")
                     + f" | 시장메모: {d.get('market_note', '')}")
