@@ -1777,6 +1777,13 @@ class DryRun:
         if score:
             lines.append("")
             lines += score
+        try:
+            diag = self._budget_diagnosis()   # 예산 대비 매수 불가 종목이 있으면 매일 상기
+            if diag:
+                lines.append("")
+                lines += diag
+        except Exception:                     # noqa: BLE001
+            pass
         note = self._market_note()
         if note:
             lines.append(f"🌍 시황 메모(AI): {note}")
@@ -1932,6 +1939,34 @@ class DryRun:
                         + "\n\n승계 유지 = 추세 규칙으로 관리 중이라는 뜻이며, 진입 자체가"
                         " 검증된 자리였다는 뜻은 아닙니다. 즉시 정리를 원하면 /sell 종목코드")
 
+    def _budget_diagnosis(self) -> list[str]:
+        """예산 대비 '1주도 못 사는' 감시 종목을 찾아 알린다 (9-29 orore 실사고: KR 예산 10만원
+        으로는 화이트리스트 국내 3종목 전부 1주 가격이 상한을 넘어 구조적으로 매수 불가 —
+        사용자는 "왜 계속 안 사?"로만 보임). 기동 시 + 마감 리포트에 붙인다. 미국은 소수점
+        금액매수라 해당 없음. 반환: 텔레그램용 줄 목록 (문제 없으면 빈 목록)."""
+        kr = [s for s in self.symbols if config.market_of(s) == "KR"
+              and s not in self.pf.positions]
+        if not kr:
+            return []
+        try:
+            px = {p["symbol"]: float(p["lastPrice"]) for p in self.client.get_prices(kr[:200])}
+        except Exception:                   # noqa: BLE001
+            return []
+        total = self.budget_total("KR")
+        cap_st = min(total * config.POSITION_PCT, config.RISK.max_order_amount)
+        cap_scan = total * config.SCANNER["position_frac"]
+        too_pricey = [(s, px[s]) for s in kr if px.get(s, 0) > cap_st]
+        if not too_pricey:
+            return []
+        names = ", ".join(f"{self._names.get(s, s)} {p:,.0f}원" for s, p in too_pricey[:6])
+        more = f" 외 {len(too_pricey) - 6}개" if len(too_pricey) > 6 else ""
+        return [f"💡 예산 진단: KR 예산 {total:,.0f}원으로는 감시 국내 {len(kr)}종목 중 "
+                f"{len(too_pricey)}개가 1주 값이 매수 상한({cap_st:,.0f}원)을 넘어 살 수 없습니다 — "
+                f"{names}{more}.",
+                f"   스캐너도 1주 ≤ {cap_scan:,.0f}원(예산의 {config.SCANNER['position_frac']:.0%})인 "
+                f"종목만 예약합니다. 국내 매수를 원하면 /budget KR 로 예산을 올리거나(예: 30만원 "
+                f"이상), 그 예산에 맞는 종목을 /watch 로 감시하세요. 미국은 소수점 매수라 해당 없음."]
+
     def watch(self, interval: int) -> None:
         print(f"{self.tag} 감시 시작 (간격 {interval}초, 시장 {'/'.join(config.MARKETS)}, "
               f"Ctrl+C 로 종료)")
@@ -1939,6 +1974,12 @@ class DryRun:
             self._legacy_audit()            # 전략 승계 심사 (해당 포지션 있을 때만 발화)
         except Exception as e:              # noqa: BLE001
             print(f"  [!] 승계 심사 실패(무시): {e}")
+        try:
+            diag = self._budget_diagnosis()  # 예산 대비 매수 불가 종목 안내 (9-29)
+            if diag:
+                notify.send("\n".join(diag))
+        except Exception as e:              # noqa: BLE001
+            print(f"  [!] 예산 진단 실패(무시): {e}")
         print(f"텔레그램 알림: {'켜짐' if notify.enabled() else '꺼짐 (notify.py 참고)'}")
         reported = None   # 국장 마감 리포트를 보낸 날짜
         try:
