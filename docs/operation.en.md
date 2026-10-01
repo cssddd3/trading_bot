@@ -11,7 +11,7 @@
 | `/resume` | Resume buying |
 | `/flat` | Liquidate everything (kill switch) |
 | `/sell 003350` | Sell one holding (market open: now / closed: queued for next open). Bot-ledger positions only |
-| `/sync` | If you sold directly in the Toss app and the ledger no longer matches the real account, this reconciles it (plain `/resume` will just re-halt on the next reconcile) |
+| `/sync` | Force the ledger to match the real account. Shares you sold yourself in the Toss app are **reconciled automatically** at the hourly check, so you normally never need this — only when 4+ symbols vanish at once and the bot halts as a precaution (after you've checked the account) |
 | `/restart` | Restart the bot (picks up new code) — one tap, no terminal needed |
 | `/budget KR 100000` | Change the KR budget (persisted; same for US) |
 | `/watch 005930` | Manually add a symbol to the watchlist (several at once: `/watch 005930,AAPL,TSLA`) |

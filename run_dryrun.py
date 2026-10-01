@@ -288,15 +288,12 @@ class DryRun:
                 continue
             had_stop = bool(self.pf.positions[sym].get("stop_order_id"))
             if not had_stop or sym in stop_syms:
-                # 스탑 발동으로 설명 안 되는 수량 감소 — 원인 불명 유출 → 안전 우선 정지.
-                # 흔한 원인은 사용자가 토스 앱에서 직접 매도한 것 — 그럴 땐 /sync로 장부를
-                # 실제 잔고에 맞추면 된다 (9-17: /resume만으론 안 풀리던 매시간 재정지 수리)
-                self.pf.halted = True
+                # 스탑 발동으로 설명 안 되는 수량 감소. 실제로는 지금까지 4건 전부 사용자가
+                # 토스 앱에서 직접 매도한 경우였다 (9-17 ×3, 9-22 V) → 10-02 사용자 지시
+                # "그냥 알아서 싱크 맞춰줘": 기본은 자동 동기화(아래, 루프 뒤 일괄). 한 번에
+                # 여러 종목이 사라지는 등 '직접 매도'로 보기 어려운 패턴만 예전처럼 정지+경보
                 self._sync_mismatch.add(sym)
-                notify.send(f"🚨 [실전] 장부-계좌 불일치: {sym} 장부 {book_qty:g}주 "
-                            f"vs 실보유 {real_qty:g}주 — 원인 불명. 매수 중지. "
-                            f"직접 파신 거라면 /sync 로 장부를 맞추세요 (그냥 /resume 은 "
-                            f"다음 대사에서 다시 멈춥니다). 아니라면 토스 앱에서 확인 필요")
+                print(f"  [대사] {sym} 장부 {book_qty:g}주 vs 실보유 {real_qty:g}주 — 불일치")
             else:
                 # 봇이 등록한 스탑이 사라짐 + 수량 감소 = 거래소측 손절 발동 → 장부 정리
                 live_px = self.last_price(sym) or self.pf.positions[sym]["avg_price"]
@@ -308,6 +305,26 @@ class DryRun:
                 self.guard.record_close(sym, pnl_krw, was_stop_loss=True)
                 del self.pf.positions[sym]
                 self._sync_mismatch.discard(sym)
+        if self._sync_mismatch:
+            syms = sorted(self._sync_mismatch)
+            cfg = config.AUTO_SYNC
+            if cfg["enabled"] and len(syms) <= cfg["max_symbols_per_pass"]:
+                # 10-02: 자동 동기화 — 사용자가 앱에서 직접 판 것으로 보고 장부를 실보유에
+                # 맞춘다 (매도 주문을 내는 게 아니라 이미 없는 물량을 장부에서 지우는 것뿐).
+                # 돈이 움직이지 않는 정정이라 멈출 이유가 없다. /sync는 수동 폴백으로 유지
+                lines = self._do_sync()
+                notify.send("🔄 [실전] 장부-계좌 불일치 자동 동기화 — 앱에서 직접 매도하신 것으로 "
+                            "보고 장부를 실보유에 맞췄습니다 (손익은 현재가 기준 추정치):\n"
+                            + "\n".join(lines)
+                            + "\n직접 파신 게 아니라면 토스 앱 체결내역을 확인해 주세요.")
+                brain.journal_append("사건", f"대사 자동 동기화: {', '.join(syms)}")
+            else:
+                # 한 번에 여러 종목이 사라짐 = 직접 매도 패턴이 아님 → 예전처럼 안전 정지
+                self.pf.halted = True
+                notify.send(f"🚨 [실전] 장부-계좌 불일치 {len(syms)}종목 동시 발생 "
+                            f"({', '.join(syms)}) — 자동 동기화 한도({cfg['max_symbols_per_pass']}"
+                            f"종목)를 넘어 매수 중지. 토스 앱에서 계좌를 확인한 뒤, 본인이 판 게 "
+                            f"맞으면 /sync, 아니면 즉시 비밀번호/API키 점검")
         self.pf.save()
 
     def _do_sync(self) -> list[str]:
