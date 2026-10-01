@@ -632,8 +632,9 @@ class DryRun:
             added.append(f"{sym} {p.get('name','')}")
         if added:
             print(f"오늘의 LLM 워치리스트 반영: {', '.join(added)}")
-        if skipped:
+        if skipped and skipped != getattr(self, "_wl_skipped_last", None):   # follower는 틱마다 호출 → 변화 시만 출력
             print(f"  (예산 밖이라 감시 제외: {', '.join(skipped)} — 상한 {cap:,.0f}원)")
+        self._wl_skipped_last = skipped
 
     def _run_scout_market(self, market: str, label: str) -> None:
         t = getattr(self, "_last_scout_llm", {})
