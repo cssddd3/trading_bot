@@ -297,7 +297,7 @@ class DryRun:
             else:
                 # 봇이 등록한 스탑이 사라짐 + 수량 감소 = 거래소측 손절 발동 → 장부 정리
                 live_px = self.last_price(sym) or self.pf.positions[sym]["avg_price"]
-                notify.send(f"🛑 [실전] {sym} 거래소측 손절 발동 감지 (장부 정리, "
+                notify.send(f"🛑 [실전] {self._label(sym)} 거래소측 손절 발동 감지 (장부 정리, "
                             f"추정가 {live_px:g}) — 상세는 토스 앱 체결내역 확인")
                 pnl_krw = self.to_krw(sym, (live_px - self.pf.positions[sym]["avg_price"])
                                       * book_qty)
@@ -322,7 +322,7 @@ class DryRun:
                 # 한 번에 여러 종목이 사라짐 = 직접 매도 패턴이 아님 → 예전처럼 안전 정지
                 self.pf.halted = True
                 notify.send(f"🚨 [실전] 장부-계좌 불일치 {len(syms)}종목 동시 발생 "
-                            f"({', '.join(syms)}) — 자동 동기화 한도({cfg['max_symbols_per_pass']}"
+                            f"({', '.join(self._label(s) for s in syms)}) — 자동 동기화 한도({cfg['max_symbols_per_pass']}"
                             f"종목)를 넘어 매수 중지. 토스 앱에서 계좌를 확인한 뒤, 본인이 판 게 "
                             f"맞으면 /sync, 아니면 즉시 비밀번호/API키 점검")
         self.pf.save()
@@ -362,14 +362,29 @@ class DryRun:
                 del self.pf.positions[sym]
                 brain.journal_append("사건", f"/sync: {sym} 장부 삭제 (실보유 0) — "
                                      f"추정손익 {pnl_krw:+,.0f}원 (현재가 기준, 실제 매도가와 다를 수 있음)")
-                lines.append(f"· {sym} 전량 매도로 간주 — 장부 삭제, 추정손익 {pnl_krw:+,.0f}원")
+                lines.append(f"· {self._label(sym)} 전량 매도로 간주 — 장부 삭제, 추정손익 {pnl_krw:+,.0f}원")
             else:
                 p["quantity"] = real_qty
                 brain.journal_append("사건", f"/sync: {sym} 수량 {book_qty:g}→{real_qty:g}주 보정")
-                lines.append(f"· {sym} 수량 보정: {book_qty:g}주 → {real_qty:g}주")
+                lines.append(f"· {self._label(sym)} 수량 보정: {book_qty:g}주 → {real_qty:g}주")
             self._sync_mismatch.discard(sym)
         self.pf.save()
         return lines or ["불일치 없음 — 동기화할 것이 없습니다"]
+
+    def _label(self, symbol: str) -> str:
+        """알림용 종목 표기 '종목명(코드)'. 10-02 사용자 요청: 코드만 보면 뭔지 모름.
+        이름을 모르면 1회 조회해 캐시한다 (예약/보유 복원 종목이 이름 없이 뜨던 문제)."""
+        name = self._names.get(symbol) or config.WHITELIST.get(symbol) \
+            or (self.pf.manual_watch or {}).get(symbol)
+        if not name:
+            try:
+                info = self.client.get_stocks([symbol])
+                name = info[0].get("name") if info else None
+            except Exception:               # noqa: BLE001
+                name = None
+            if name:
+                self._names[symbol] = name
+        return f"{name}({symbol})" if name else symbol
 
     def _notify_reject(self, symbol: str, why: str) -> None:
         """거부 알림 — 같은 종목·같은 사유 계열은 하루 1회만 (transient 재시도 스팸 방지)."""
@@ -380,7 +395,7 @@ class DryRun:
         if key in cache:
             return
         cache.add(key)
-        notify.send(f"⛔ [{self.tag}] 매수 차단\n{symbol} {self._names.get(symbol, '')}\n{why}")
+        notify.send(f"⛔ [{self.tag}] 매수 차단\n{self._label(symbol)}\n{why}")
 
     def _desired_backstop(self, sym: str, p: dict) -> float:
         """거래소측 백스톱의 목표 트리거가격.
@@ -413,7 +428,7 @@ class DryRun:
         others = [s for s in stops if s[0] != my_id]
         if others and self.pf.done_today.get(f"{sym}:stopalert") != now_kst().date().isoformat():
             self.pf.done_today[f"{sym}:stopalert"] = now_kst().date().isoformat()
-            notify.send(f"ℹ️ [{self.tag}] {sym}에 봇 소유가 아닌 조건주문 {len(others)}건 감지 — "
+            notify.send(f"ℹ️ [{self.tag}] {self._label(sym)}에 봇 소유가 아닌 조건주문 {len(others)}건 감지 — "
                         f"직접 거신 거면 그대로 둡니다 (봇은 자기 것만 관리)")
         if mine and desired > 0 and abs(mine[0][1] - desired) / desired <= 0.02:
             return                              # 내 스탑 1개 + 트리거 일치 — 그대로
@@ -768,13 +783,13 @@ class DryRun:
                                       was_stop=True)
                 elif v.headlines_hash != self.pf.done_today.get(f"{sym}:newsalert"):
                     self.pf.done_today[f"{sym}:newsalert"] = v.headlines_hash
-                    notify.send(f"🚨 [{self.tag}] {sym} {self._names.get(sym, '')} "
+                    notify.send(f"🚨 [{self.tag}] {self._label(sym)} "
                                 f"치명 플래그 감지 — 단, 거래소 확인 결과 정지/이상 아님 "
                                 f"→ 자동청산 보류, 직접 판단 요망\n{v.reason()}")
             elif v.alert_exit and not v.headlines_hash == self.pf.done_today.get(f"{sym}:newsalert"):
                 # 감성 악재는 자동 매도 대신 경보 — 판단은 사람이 (/flat 또는 개별 대응)
                 self.pf.done_today[f"{sym}:newsalert"] = v.headlines_hash
-                notify.send(f"⚠️ [{self.tag}] {sym} {self._names.get(sym, '')} 악재 뉴스 감지"
+                notify.send(f"⚠️ [{self.tag}] {self._label(sym)} 악재 뉴스 감지"
                             f" (자동 청산 안 함)\n{v.reason()}\n"
                             f"직접 판단: /flat(전량) 또는 유지")
 
@@ -1213,14 +1228,14 @@ class DryRun:
                 # 타임아웃/네트워크 단절 = 주문이 접수됐을 수도 있다 → 재시도 금지,
                 # 매수 중지 + 경보 + 대사가 실계좌와 대조하도록 (이중 매수 사고 방지)
                 self.pf.halted = True
-                notify.send(f"🚨 [{self.tag}] {symbol} 매수 주문 결과 불명({type(e).__name__})"
+                notify.send(f"🚨 [{self.tag}] {self._label(symbol)} 매수 주문 결과 불명({type(e).__name__})"
                             f" — 이중 매수 방지 위해 매수 중지. 계좌 확인 후 /resume")
                 self.pf.done_today[f"{symbol}:buy"] = now_kst().date().isoformat()
                 return "permanent"
             if fill and fill.get("status") == "UNKNOWN":
                 # 주문은 나갔는데 체결/취소 확인 실패 — 살아있는 주문일 수 있다
                 self.pf.halted = True
-                notify.send(f"🚨 [{self.tag}] {symbol} 매수 상태 UNKNOWN — 이중 매수 방지 위해 "
+                notify.send(f"🚨 [{self.tag}] {self._label(symbol)} 매수 상태 UNKNOWN — 이중 매수 방지 위해 "
                             f"매수 중지. 계좌 확인 후 /resume (체결됐다면 --adopt {symbol})")
                 self.pf.done_today[f"{symbol}:buy"] = now_kst().date().isoformat()
                 return "permanent"
@@ -1278,11 +1293,11 @@ class DryRun:
         stop_note = (f"\n거래소측 손절 @{self.pf.positions[symbol].get('stop_price') or '-'}"
                      if self.live else "")
         print(f"  [{self.tag} 매수] {symbol} {qty:g}주 @ {px_disp}{unit} — {reason}")
-        brain.journal_append("매매", f"매수 {symbol} {self._names.get(symbol, '')} "
+        brain.journal_append("매매", f"매수 {self._label(symbol)} "
                              f"{qty:g}주 @{px_disp}{unit} — {reason}")
-        notify.broadcast(f"🟢 매수: {symbol} {self._names.get(symbol, '')} @ {px_disp}"
+        notify.broadcast(f"🟢 매수: {self._label(symbol)} @ {px_disp}"
                          f"{'$' if market == 'US' else '원'} — {reason}")
-        notify.send(f"🟢 [{self.tag}] 매수\n{symbol} {self._names.get(symbol, '')} "
+        notify.send(f"🟢 [{self.tag}] 매수\n{self._label(symbol)} "
                     f"{qty:g}주 @ {px_disp}{unit}\n{reason}{stop_note}")
         return "filled"
 
@@ -1308,7 +1323,7 @@ class DryRun:
                 if self.pf.pending.get(symbol, {}).get("action") != "SELL":
                     self.pf.pending[symbol] = {"action": "SELL",
                                                "reason": f"(장외이월) {reason}", "date": ""}
-                    notify.send(f"⏸ [실전] {symbol} 매도 불가 세션({sess}) — "
+                    notify.send(f"⏸ [실전] {self._label(symbol)} 매도 불가 세션({sess}) — "
                                 f"다음 장 시가 매도 예약\n사유: {reason}")
                 return
             if market == "KR" and sess == "CLOSING_AUCTION":
@@ -1323,11 +1338,11 @@ class DryRun:
                 print(f"  [실주문 매도 실패] {symbol} — 다음 시가 매도 예약")
                 self.pf.pending[symbol] = {"action": "SELL",
                                            "reason": f"(재시도) {reason}", "date": ""}
-                notify.send(f"⚠️ [실전] 매도 미체결 — {symbol} 다음 장 시가 예약\n사유: {reason}")
+                notify.send(f"⚠️ [실전] 매도 미체결 — {self._label(symbol)} 다음 장 시가 예약\n사유: {reason}")
                 return
             if fill.get("status") == "UNKNOWN":
                 self.pf.halted = True
-                notify.send(f"🚨 [실전] {symbol} 매도 주문 상태 불명 — 매수 중지. "
+                notify.send(f"🚨 [실전] {self._label(symbol)} 매도 주문 상태 불명 — 매수 중지. "
                             f"토스 앱 확인 후 /resume")
             price, qty = fill["avg_price"], fill["filled"]
 
@@ -1362,14 +1377,14 @@ class DryRun:
         px_disp = f"{price:,.2f}" if market == "US" else f"{price:,.0f}"
         print(f"  [{self.tag} 매도] {symbol} {qty:g}주 @ {px_disp}{unit} "
               f"(손익 {pnl_krw:+,.0f}원, {rate:+.2%}) — {reason}")
-        brain.journal_append("매매", f"매도 {symbol} {self._names.get(symbol, '')} "
+        brain.journal_append("매매", f"매도 {self._label(symbol)} "
                              f"@{px_disp}{unit} 손익 {pnl_krw:+,.0f}원({rate:+.1%}) — {reason}. "
                              f"진입근거: {pos.get('entry_reason', '기록 없음')} "
                              f"({pos.get('entry_date', '?')})")
         emoji = "🔴" if pnl_krw < 0 else "🔵"
-        notify.broadcast(f"{emoji} 매도: {symbol} {self._names.get(symbol, '')} "
+        notify.broadcast(f"{emoji} 매도: {self._label(symbol)} "
                          f"@ {px_disp}{'$' if market == 'US' else '원'} ({rate:+.2%}) — {reason}")
-        notify.send(f"{emoji} [{self.tag}] 매도\n{symbol} {self._names.get(symbol, '')} "
+        notify.send(f"{emoji} [{self.tag}] 매도\n{self._label(symbol)} "
                     f"{qty:g}주 @ {px_disp}{unit}\n손익 {pnl_krw:+,.0f}원 ({rate:+.2%})\n{reason}")
 
     def _watch_add(self, syms: list[str]) -> str:
@@ -1519,7 +1534,7 @@ class DryRun:
                         self.pf.pending[sym] = {"action": "SELL",
                                                 "reason": "사용자 지시 (/sell)",
                                                 "date": "1970-01-01"}
-                        notify.send(f"📅 {sym} {self._names.get(sym, '')} — 장이 닫혀 있어 "
+                        notify.send(f"📅 {self._label(sym)} — 장이 닫혀 있어 "
                                     f"다음 시가 매도 예약했습니다")
             elif cmd == "/restart":
                 # 새 코드 반영용 자기 재시작 — 터미널 없이 폰에서 원터치
@@ -1567,7 +1582,7 @@ class DryRun:
             sig_idx = dates.index(pend["date"]) if pend["date"] in dates else None
             if sig_idx is not None and i - sig_idx > config.PENDING_BUY_EXPIRE_DAYS:
                 del self.pf.pending[symbol]
-                notify.send(f"⌛ [{self.tag}] {symbol} {self._names.get(symbol, '')} "
+                notify.send(f"⌛ [{self.tag}] {self._label(symbol)} "
                             f"매수 예약 만료 — {pend['date']} 신호가 {i - sig_idx}거래일째 "
                             f"미체결(주로 예산·예수금 부족)이라 취소합니다. 오래된 전환 "
                             f"신호로 사는 건 위험(그때의 추세 전제가 깨졌을 수 있음) — "
@@ -1688,7 +1703,7 @@ class DryRun:
                     if not prev or prev.get("action") != sig.action.value:
                         act = "매수" if sig.action == Action.BUY else "매도"
                         notify.send(f"📅 [{self.tag}] 다음 시가 {act} 예약\n"
-                                    f"{symbol} {self._names.get(symbol, '')} — {sig.reason}")
+                                    f"{self._label(symbol)} — {sig.reason}")
                     log_signal({"time": now_kst().isoformat(timespec="seconds"),
                                 "symbol": symbol, "strategy": self.key,
                                 "action": f"PENDING_{sig.action.value}",
@@ -1965,7 +1980,7 @@ class DryRun:
             p["entry_src"] = "기각 전략 vb (승계 심사 완료)"
             p.setdefault("entry_reason", "급등 추격 매수 (단타성 진입)")
             live = self.last_price(sym) or p["avg_price"]
-            lines.append(f"· {sym} {self._names.get(sym, '')} "
+            lines.append(f"· {self._label(sym)} "
                          f"({live / p['avg_price'] - 1:+.1%}) — {verdict}")
         if lines:
             self.pf.save()
@@ -1988,16 +2003,29 @@ class DryRun:
         except Exception:                   # noqa: BLE001
             return []
         total = self.budget_total("KR")
-        cap_st = min(total * config.POSITION_PCT, config.RISK.max_order_amount)
-        cap_scan = total * config.SCANNER["position_frac"]
+        # 10-02: 실제 한도는 min(예산, 예수금) — orore는 예산을 30만으로 올려도 예수금이
+        # 10만이라 진단이 "살 수 있다"고 안심시키던 오류. 실전이면 예수금도 반영한다
+        cash = None
+        if self.live and self.broker:
+            try:
+                cash = float(self.broker.buying_power("KRW"))
+            except Exception:               # noqa: BLE001
+                cash = None
+        bind = total if cash is None else min(total, cash)
+        cap_st = min(bind * config.POSITION_PCT, config.RISK.max_order_amount)
+        cap_scan = min(total * config.SCANNER["position_frac"], cap_st)
         too_pricey = [(s, px[s]) for s in kr if px.get(s, 0) > cap_st]
         if not too_pricey:
             return []
         names = ", ".join(f"{self._names.get(s, s)} {p:,.0f}원" for s, p in too_pricey[:6])
         more = f" 외 {len(too_pricey) - 6}개" if len(too_pricey) > 6 else ""
-        return [f"💡 예산 진단: KR 예산 {total:,.0f}원으로는 감시 국내 {len(kr)}종목 중 "
+        why = (f"KR 예수금 {cash:,.0f}원(예산 {total:,.0f}원)" if cash is not None and cash < total
+               else f"KR 예산 {total:,.0f}원")
+        return [f"💡 예산 진단: {why}으로는 감시 국내 {len(kr)}종목 중 "
                 f"{len(too_pricey)}개가 1주 값이 매수 상한({cap_st:,.0f}원)을 넘어 살 수 없습니다 — "
-                f"{names}{more}.",
+                f"{names}{more}."
+                + (" 예산보다 예수금이 적습니다 — 입금해야 예산만큼 살 수 있습니다."
+                   if cash is not None and cash < total else ""),
                 f"   스캐너도 1주 ≤ {cap_scan:,.0f}원(예산의 {config.SCANNER['position_frac']:.0%})인 "
                 f"종목만 예약합니다. 국내 매수를 원하면 /budget KR 로 예산을 올리거나(예: 30만원 "
                 f"이상), 그 예산에 맞는 종목을 /watch 로 감시하세요. 미국은 소수점 매수라 해당 없음."]

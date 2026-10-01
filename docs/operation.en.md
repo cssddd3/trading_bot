@@ -24,6 +24,13 @@ from validated price rules), scanner signals (🔍), drawdown briefing (📉), h
 (a one-liner "💓 running HH:MM" — if it stops, the bot is down, check the machine; shows 🛑
 while buying is halted), end-of-day report, crashes.
 
+**Reading the alerts**: symbols always appear as `Name(code)`. A news verdict looks like
+`뉴스 악재(-0.3) · 확신 낮음(40%) · 위험신호: 분식회계 의혹 — summary`: the first number is the
+AI's estimate of the next 1–5 days' price impact (-1 strong negative … +1 strong positive), the
+percentage is how confident it is. A buy is blocked only at "negative or worse with at least
+medium confidence"; an automatic exit happens only when a trading-halt / delisting / accounting
+fraud / embezzlement signal shows up in 3+ headlines — everything else is informational.
+
 The AI assistant **remembers the symbols it showed you last turn as data**, so follow-ups like
 "give me those as company names" or "which of that list went up?" stay on topic. Names come
 only from a dictionary the bot has actually verified — unknown symbols are reported as

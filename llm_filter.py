@@ -28,6 +28,13 @@ on_api_error = None
 # 이 플래그가 하나라도 뜨면 감성점수와 무관하게 매수 차단
 CRITICAL_FLAGS = {"trading_halt", "delisting", "accounting_fraud", "embezzlement"}
 
+# 사용자에게 보여줄 때의 한국어 이름 (내부 enum은 그대로 — 캐시·판정 로직 호환)
+FLAG_KO = {
+    "trading_halt": "거래정지", "delisting": "상장폐지", "accounting_fraud": "분식회계 의혹",
+    "embezzlement": "횡령·배임", "lawsuit": "소송", "regulatory": "규제·제재",
+    "dilution": "유상증자·물량부담", "management_risk": "경영진 리스크", "earnings_shock": "실적 쇼크",
+}
+
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -101,10 +108,16 @@ class Verdict:
                 and self.confidence >= config.NEWS_MONITOR["exit_confidence"])
 
     def reason(self) -> str:
-        flags = [f for f in self.risk_flags if f != "none"]
-        tag = f" 플래그={flags}" if flags else ""
-        return (f"뉴스 감성 {self.sentiment:+.2f} (확신도 {self.confidence:.2f}){tag}"
-                f" — {self.summary}")
+        """사람이 읽는 한 줄 (10-02: '플래그=[accounting_fraud]', '-0.30 (확신도 0.40)' 같은
+        기계 표기가 텔레그램에 그대로 나가 무슨 뜻인지 모르겠다는 사용자 지적 → 한국어 등급).
+        sentiment -1~+1: 향후 1~5거래일 주가 영향 방향·강도 / confidence 0~1: 판단 확신."""
+        s, c = self.sentiment, self.confidence
+        mood = ("강한 악재" if s <= -0.6 else "악재" if s <= -0.3 else "약한 악재" if s < -0.1
+                else "중립" if s <= 0.1 else "약한 호재" if s < 0.3 else "호재" if s < 0.6 else "강한 호재")
+        conf = "확신 낮음" if c < 0.5 else "확신 보통" if c < 0.75 else "확신 높음"
+        flags = [FLAG_KO.get(f, f) for f in self.risk_flags if f != "none"]
+        tag = f" · 위험신호: {', '.join(flags)}" if flags else ""
+        return f"뉴스 {mood}({s:+.1f}) · {conf}({c:.0%}){tag} — {self.summary}"
 
 
 class NewsFilter:
