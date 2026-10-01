@@ -552,6 +552,11 @@ class DryRun:
         self.pf.budget_base[market] = amount
         self.pf.save()
         self._scale_risk_limits()               # 한도도 즉시 새 예산에 연동
+        self._kr_cap_cache = None               # 10-02: 매수 상한 재계산 → 예산 밖 종목 판정 갱신
+        try:
+            self._apply_watchlist()             # 예산이 늘었으면 전에 제외됐던 픽이 다시 들어온다
+        except Exception:                       # noqa: BLE001
+            pass
         L = self.guard.limits
         return (f"💰 [{self.tag}] {market} 초기예산 → {amount:,}원 (즉시 적용·재시작에도 유지)\n"
                 f"현재 예산: {self._budget_str()}\n"
@@ -602,17 +607,33 @@ class DryRun:
         data = load_watchlist()
         if not data or not data.get("picks"):
             return
-        added = []
+        added, skipped = [], []
+        # 10-02: 예산·예수금으로 1주도 못 사는 국내 픽은 처음부터 감시에 넣지 않는다
+        cap = self._kr_cap()
+        kr_new = [p["symbol"] for p in data["picks"]
+                  if config.market_of(p["symbol"]) == "KR" and p["symbol"] not in self.symbols]
+        px = {}
+        if cap is not None and kr_new:
+            try:
+                px = {q["symbol"]: float(q["lastPrice"]) for q in self.client.get_prices(kr_new[:200])}
+            except Exception:               # noqa: BLE001
+                px = {}
         for p in data["picks"]:
             sym = p["symbol"]
             self._names[sym] = p.get("name", sym)
+            if sym in self.symbols:
+                continue
+            if cap is not None and px.get(sym, 0) > cap:
+                skipped.append(f"{p.get('name', sym)}({sym}) {px[sym]:,.0f}원")
+                continue
             if sym not in self.guard.limits.allow_symbols:
                 self.guard.limits.allow_symbols[sym] = p.get("name", sym)
-            if sym not in self.symbols:
-                self.symbols.append(sym)
-                added.append(f"{sym} {p.get('name','')}")
+            self.symbols.append(sym)
+            added.append(f"{sym} {p.get('name','')}")
         if added:
             print(f"오늘의 LLM 워치리스트 반영: {', '.join(added)}")
+        if skipped:
+            print(f"  (예산 밖이라 감시 제외: {', '.join(skipped)} — 상한 {cap:,.0f}원)")
 
     def _run_scout_market(self, market: str, label: str) -> None:
         t = getattr(self, "_last_scout_llm", {})
@@ -1397,13 +1418,24 @@ class DryRun:
             infos = {i["symbol"]: i for i in self.client.get_stocks(syms)}
         except Exception:                   # noqa: BLE001
             infos = {}
-        added, missing = [], []
+        added, missing, pricey = [], [], []
+        cap = self._kr_cap()
+        kr_syms = [x for x in syms if config.market_of(x) == "KR" and x in infos]
+        px = {}
+        if cap is not None and kr_syms:
+            try:
+                px = {q["symbol"]: float(q["lastPrice"]) for q in self.client.get_prices(kr_syms)}
+            except Exception:               # noqa: BLE001
+                px = {}
         for sym in syms:
             info = infos.get(sym)
             if not info:
                 missing.append(sym)
                 continue
             name = info.get("name", sym)
+            if cap is not None and px.get(sym, 0) > cap:   # 10-02: 못 사는 종목은 안 본다
+                pricey.append(f"{name}({sym}) {px[sym]:,.0f}원")
+                continue
             self.pf.manual_watch[sym] = name
             added.append(f"{sym} {name}")
         if added:
@@ -1416,6 +1448,10 @@ class DryRun:
         if missing:
             msg += ("\n" if msg else "") + \
                    f"⚠️ 못 찾음(KR 6자리 코드/US 티커 확인): {', '.join(missing)}"
+        if pricey:
+            msg += ("\n" if msg else "") + \
+                   f"👀 등록 안 함(1주 값이 매수 상한 {cap:,.0f}원 초과 — 예산/예수금을 늘리면 가능): " \
+                   f"{', '.join(pricey)}"
         return msg or "추가할 종목이 없습니다"
 
     def _watch_remove(self, syms: list[str]) -> str:
@@ -1756,6 +1792,15 @@ class DryRun:
             self._refresh_vol_regime()         # 변동성 체제 갱신 (하루 1회, 9-09 채택)
         except Exception as e:                  # noqa: BLE001
             print(f"  [!] 변동성체제 갱신 예외(무시): {e}")
+        _today = now_kst().date().isoformat()
+        if self.pf.done_today.get("prune") != _today:
+            self.pf.done_today["prune"] = _today
+            try:
+                _diag = self._budget_diagnosis()   # 10-02: 예산·예수금 밖 종목은 감시에서 제외
+                if _diag:
+                    notify.send("\n".join(_diag))
+            except Exception as e:              # noqa: BLE001
+                print(f"  [!] 예산 진단 예외(무시): {e}")
         self._write_dashboard()
         for m, (sess, _info) in sessions.items():
             if sess == "PRE":
@@ -1989,22 +2034,13 @@ class DryRun:
                         + "\n\n승계 유지 = 추세 규칙으로 관리 중이라는 뜻이며, 진입 자체가"
                         " 검증된 자리였다는 뜻은 아닙니다. 즉시 정리를 원하면 /sell 종목코드")
 
-    def _budget_diagnosis(self) -> list[str]:
-        """예산 대비 '1주도 못 사는' 감시 종목을 찾아 알린다 (9-29 orore 실사고: KR 예산 10만원
-        으로는 화이트리스트 국내 3종목 전부 1주 가격이 상한을 넘어 구조적으로 매수 불가 —
-        사용자는 "왜 계속 안 사?"로만 보임). 기동 시 + 마감 리포트에 붙인다. 미국은 소수점
-        금액매수라 해당 없음. 반환: 텔레그램용 줄 목록 (문제 없으면 빈 목록)."""
-        kr = [s for s in self.symbols if config.market_of(s) == "KR"
-              and s not in self.pf.positions]
-        if not kr:
-            return []
-        try:
-            px = {p["symbol"]: float(p["lastPrice"]) for p in self.client.get_prices(kr[:200])}
-        except Exception:                   # noqa: BLE001
-            return []
+    def _kr_cap(self) -> float | None:
+        """국내 1주 매수 가능 상한 = min(예산, 예수금) × POSITION_PCT (1회 주문 한도 포함).
+        예수금 조회는 10분 캐시. 캐시 튜플: (ts, cap, 예산, 예수금)."""
+        c = getattr(self, "_kr_cap_cache", None)
+        if c and time.time() - c[0] < 600:
+            return c[1]
         total = self.budget_total("KR")
-        # 10-02: 실제 한도는 min(예산, 예수금) — orore는 예산을 30만으로 올려도 예수금이
-        # 10만이라 진단이 "살 수 있다"고 안심시키던 오류. 실전이면 예수금도 반영한다
         cash = None
         if self.live and self.broker:
             try:
@@ -2012,23 +2048,42 @@ class DryRun:
             except Exception:               # noqa: BLE001
                 cash = None
         bind = total if cash is None else min(total, cash)
-        cap_st = min(bind * config.POSITION_PCT, config.RISK.max_order_amount)
-        cap_scan = min(total * config.SCANNER["position_frac"], cap_st)
-        too_pricey = [(s, px[s]) for s in kr if px.get(s, 0) > cap_st]
-        if not too_pricey:
+        cap = min(bind * config.POSITION_PCT, config.RISK.max_order_amount)
+        self._kr_cap_cache = (time.time(), cap, total, cash)
+        return cap
+
+    def _budget_diagnosis(self) -> list[str]:
+        """예산·예수금으로 1주도 못 사는 국내 감시 종목을 **감시에서 제외**하고 알린다.
+        10-02 사용자 지시 "SK하이닉스처럼 비싼 건 쳐다도 보지 마" — 9-29의 '경고만' 버전을
+        실제 제외로 바꿈. 보유·예약 종목은 관리상 유지. 영구 차단이 아니라, 예산(/budget)이나
+        예수금이 늘면 다음 워치리스트 반영 때 자동으로 다시 들어온다 (_apply_watchlist가 같은
+        상한으로 거르므로 반대로 못 사는 종목이 다시 들어오지도 않는다). 미국은 소수점 매수라 제외."""
+        kr = [s for s in self.symbols if config.market_of(s) == "KR"
+              and s not in self.pf.positions and s not in self.pf.pending]
+        if not kr:
             return []
-        names = ", ".join(f"{self._names.get(s, s)} {p:,.0f}원" for s, p in too_pricey[:6])
-        more = f" 외 {len(too_pricey) - 6}개" if len(too_pricey) > 6 else ""
+        cap = self._kr_cap()
+        if cap is None:
+            return []
+        try:
+            px = {q["symbol"]: float(q["lastPrice"]) for q in self.client.get_prices(kr[:200])}
+        except Exception:                   # noqa: BLE001
+            return []
+        too = [(s, px[s]) for s in kr if px.get(s, 0) > cap]
+        if not too:
+            return []
+        for s, _ in too:
+            if s in self.symbols:
+                self.symbols.remove(s)
+        _, _, total, cash = self._kr_cap_cache
+        names = ", ".join(f"{self._label(s)} {p:,.0f}원" for s, p in too[:6])
+        more = f" 외 {len(too) - 6}개" if len(too) > 6 else ""
         why = (f"KR 예수금 {cash:,.0f}원(예산 {total:,.0f}원)" if cash is not None and cash < total
                else f"KR 예산 {total:,.0f}원")
-        return [f"💡 예산 진단: {why}으로는 감시 국내 {len(kr)}종목 중 "
-                f"{len(too_pricey)}개가 1주 값이 매수 상한({cap_st:,.0f}원)을 넘어 살 수 없습니다 — "
-                f"{names}{more}."
-                + (" 예산보다 예수금이 적습니다 — 입금해야 예산만큼 살 수 있습니다."
-                   if cash is not None and cash < total else ""),
-                f"   스캐너도 1주 ≤ {cap_scan:,.0f}원(예산의 {config.SCANNER['position_frac']:.0%})인 "
-                f"종목만 예약합니다. 국내 매수를 원하면 /budget KR 로 예산을 올리거나(예: 30만원 "
-                f"이상), 그 예산에 맞는 종목을 /watch 로 감시하세요. 미국은 소수점 매수라 해당 없음."]
+        return [f"👀 감시 제외: {why} 기준 매수 상한 {cap:,.0f}원을 넘는 국내 {len(too)}종목은 "
+                f"보지 않습니다 — {names}{more}. 예산(/budget)이나 예수금이 늘면 자동으로 다시 봅니다."
+                + (" (예산보다 예수금이 적습니다 — 입금해야 예산만큼 살 수 있습니다)"
+                   if cash is not None and cash < total else "")]
 
     def watch(self, interval: int) -> None:
         print(f"{self.tag} 감시 시작 (간격 {interval}초, 시장 {'/'.join(config.MARKETS)}, "

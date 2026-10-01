@@ -62,6 +62,11 @@ can open it; control stays behind the Telegram chat-id gate).
 - **Cash (예수금)** = actual money in the brokerage account (Korean sale proceeds settle T+2)
 - What the bot can actually spend = **min(cash, remaining budget)** — raising the budget
   without depositing cash means buys will fail
+- **Unaffordable symbols are not watched at all**: any KR symbol whose single-share price
+  exceeds the buy cap (min(budget, cash)×95%) is pruned from the watchlist automatically with
+  a "👀 감시 제외" alert (checked once a day; scout picks and `/watch` are filtered by the same
+  rule). Held/pending symbols stay. Not permanent — raise `/budget` or deposit cash and they
+  come back on their own. US stocks are fractional, so they are never pruned
 
 ## Adopting positions you bought manually
 

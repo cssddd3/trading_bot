@@ -309,6 +309,15 @@ look-ahead 방지). LLM에 과거 종목명·날짜를 주면 백테스트 오�
   봇 + 저회전 전략 = 긴 침묵이 정상. 수리: `_budget_diagnosis()` — 기동 시·마감 리포트에
   "💡 예산 진단"(1주 값이 상한 초과인 감시 종목·상한 수치·/budget /watch 안내). 예산 자체는
   사용자 결정이라 안 건드림. setup(.en).md 문제해결 표에 행 추가.
+  **10-02 후속 — 사용자 지시 "SK하이닉스처럼 비싼 건 쳐다도 보지 마"**: 경고만 하던
+  `_budget_diagnosis`를 **실제 제외**로 전환. `_kr_cap()` = min(min(예산, 예수금)×POSITION_PCT,
+  RISK.max_order_amount) (예수금 10분 캐시). 1주 값 > cap인 국내 감시 종목은 self.symbols에서
+  제거(보유·pending 제외) + "👀 감시 제외" 알림 — tick에서 done_today['prune']로 하루 1회.
+  같은 상한으로 `_apply_watchlist`(스카우트/공유 픽·재시작 복원)와 `_watch_add`(/watch·비서)도
+  거른다 → 못 사는 종목이 다시 들어올 경로 없음. `_set_budget`은 캐시 무효화 후
+  `_apply_watchlist` 재호출(예산 올리면 즉시 복귀). 미국은 소수점이라 미적용. 주의: cap에
+  RISK.max_order_amount가 들어가므로 테스트에서 budget_base를 직접 바꿀 땐 `_scale_risk_limits()`
+  호출 필수 (안 하면 기본 5만원 상한으로 전부 제외됨).
 - **9-29 (저녁) 실사고 2건 + 두 봇 정보 공유 도입**: ① 재시작하면 그날 스카우트가 추가한
   감시 종목이 증발 — run_scout가 시장별 picks를 '덮어쓰기'해서 마지막 실행(픽 0개)만
   파일에 남고, 재시작 복원은 그 파일 기준. orore 예산 조정 재시작 때 국내 9종목이 사라짐.
